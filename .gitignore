@@ -2,6 +2,10 @@
 .env
 .venv/
 
+# Streamlit agent skills (environment-specific symlinks)
+.agents/
+.claude/
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]
