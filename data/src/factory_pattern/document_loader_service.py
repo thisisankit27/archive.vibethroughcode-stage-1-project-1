@@ -1,4 +1,4 @@
-from data.src.services.loader_factory import LoaderFactory
+from data.src.factory_pattern.loader_factory import LoaderFactory
 
 
 def load_documents(uploaded_files):

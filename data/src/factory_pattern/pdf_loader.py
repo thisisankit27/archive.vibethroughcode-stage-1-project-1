@@ -3,7 +3,7 @@ import tempfile
 
 from langchain_community.document_loaders import PyPDFLoader
 
-from data.src.services.loader import Loader
+from data.src.factory_pattern.loader import Loader
 
 
 class PdfLoader(Loader):
