@@ -1,8 +1,8 @@
 from pathlib import Path
 
-from data.src.services.loader import Loader
-from data.src.services.pdf_loader import PdfLoader
-
+from data.src.factory_pattern.loader import Loader
+from data.src.factory_pattern.pdf_loader import PdfLoader
+from data.src.factory_pattern.markdown_loader import MarkdownLoader
 
 class LoaderFactory:
 
@@ -13,5 +13,7 @@ class LoaderFactory:
 
         if extension == ".pdf":
             return PdfLoader(uploaded_file)
+        if extension == ".md":
+            return MarkdownLoader(uploaded_file)
 
         raise ValueError(f"Unsupported file type: {extension}")

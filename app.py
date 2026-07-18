@@ -18,8 +18,8 @@ with st.sidebar:
 
     st.success("✅ PR-1 Bootstrap")
 
-    st.write("⬜ PR-2 PDF Upload")
-    st.write("⬜ PR-3 Chunking")
+    st.success("✅ PR-2 PDF Upload")
+    st.success("✅ PR-3 Chunking")
     st.write("⬜ PR-4 Embeddings")
     st.write("⬜ PR-5 Vector Store")
     st.write("⬜ PR-6 Basic RAG")
@@ -27,7 +27,7 @@ with st.sidebar:
     st.divider()
 
     st.subheader("Week 1 Progress")
-    st.progress(11)
+    st.progress(50)
 
 # --------------------------------------------------
 # Main Page
@@ -44,15 +44,30 @@ st.subheader("📄 Upload Documents")
 
 files = st.file_uploader(
     "Upload your PDF",
-    type="pdf",
+    type=["pdf", "md"],
     accept_multiple_files=True,
     disabled=False
 )
 
-documents = ingest_documents(files)
+chunks = ingest_documents(files)
 
-if documents:
-    st.success(f"Loaded {len(documents)} documents.")
+if chunks:
+
+    st.success(f"Generated {len(chunks)} chunks.")
+    selected_chunk = st.number_input(
+        "Preview Chunk",
+        min_value=1,
+        max_value=len(chunks),
+        value=1,
+    )
+
+    chunk = chunks[selected_chunk - 1]
+
+    with st.expander("📄 Chunk Content", expanded=True):
+        st.write(chunk.page_content)
+
+    with st.expander("🏷️ Metadata"):
+        st.json(chunk.metadata)
 
 st.divider()
 
@@ -70,17 +85,27 @@ st.divider()
 # --------------------------------------------------
 st.subheader("📈 Current Milestone")
 
-st.write("**Week 1 • PR-1 Bootstrap**")
+st.write("**Week 1 • PR-3 Chunking Engine**")
 
 st.success(
     """
-    ✅ Project initialized
+    ✅ Project bootstrapped
 
-    ✅ Streamlit UI created
+    ✅ Streamlit prototype completed
 
-    ✅ Roadmap established
+    ✅ Multi-document upload
 
-    ⏳ Next milestone: PDF Upload
+    ✅ Factory Pattern (Document Loaders)
+
+    ✅ Strategy Pattern (Chunking Engine)
+
+    ✅ Flyweight Pattern (Reusable Strategies)
+
+    ✅ Recursive Character Chunking
+
+    ✅ Chunk Preview & Metadata
+
+    ⏳ Next milestone: Embeddings & FAISS Vector Store
     """
 )
 
