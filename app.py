@@ -20,14 +20,14 @@ with st.sidebar:
 
     st.success("✅ PR-2 PDF Upload")
     st.success("✅ PR-3 Chunking")
-    st.write("⬜ PR-4 Embeddings")
+    st.success("✅ PR-4 Embeddings")
     st.write("⬜ PR-5 Vector Store")
     st.write("⬜ PR-6 Basic RAG")
 
     st.divider()
 
     st.subheader("Week 1 Progress")
-    st.progress(50)
+    st.progress(67)
 
 # --------------------------------------------------
 # Main Page
@@ -43,17 +43,28 @@ st.divider()
 st.subheader("📄 Upload Documents")
 
 files = st.file_uploader(
-    "Upload your PDF",
+    "Upload your documents",
     type=["pdf", "md"],
     accept_multiple_files=True,
-    disabled=False
 )
 
-chunks = ingest_documents(files)
+if files:
 
-if chunks:
+    chunks, embeddings, dimension, elapsed = ingest_documents(files)
 
     st.success(f"Generated {len(chunks)} chunks.")
+
+    col1, col2, col3 = st.columns(3)
+
+    with col1:
+        st.metric("Chunks", len(chunks))
+
+    with col2:
+        st.metric("Embedding Dimension", dimension)
+
+    with col3:
+        st.metric("Embedding Time", f"{elapsed:.3f}s")
+
     selected_chunk = st.number_input(
         "Preview Chunk",
         min_value=1,
@@ -68,6 +79,9 @@ if chunks:
 
     with st.expander("🏷️ Metadata"):
         st.json(chunk.metadata)
+
+    with st.expander("🔢 Embedding Preview"):
+        st.write(embeddings[selected_chunk - 1][:20])  # First 20 values
 
 st.divider()
 
