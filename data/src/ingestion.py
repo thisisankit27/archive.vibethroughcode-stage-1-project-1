@@ -14,5 +14,6 @@ def ingest_documents(uploaded_files):
     embeddings, dimension, elapsed = EmbeddingService.generate_embeddings(chunks)
 
     vector_store.store(chunks, embeddings)
+    knowledge_base_size = vector_store.document_count()
 
-    return chunks, embeddings, dimension, elapsed
+    return chunks, embeddings, dimension, elapsed, knowledge_base_size

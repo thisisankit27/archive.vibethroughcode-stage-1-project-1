@@ -61,14 +61,12 @@ class VectorStore:
 
     def search(
         self,
-        query: str,
+        query_embedding: list[float],
         k: int = 2,
     ) -> list[Document]:
 
         if self._index is None:
             return []
-
-        query_embedding = EmbeddingService.generate_query_embedding(query)
 
         query_embedding = np.ascontiguousarray(
             [query_embedding],
@@ -89,3 +87,6 @@ class VectorStore:
                 matched_documents.append(self._documents[index])
 
         return matched_documents
+
+    def document_count(self) -> int:
+        return len(self._documents)
