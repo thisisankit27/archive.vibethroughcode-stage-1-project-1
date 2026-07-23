@@ -1,5 +1,6 @@
 import streamlit as st
 from data.src.ingestion import ingest_documents
+from data.src.rag import ask
 
 # --------------------------------------------------
 # Page Configuration
@@ -21,13 +22,13 @@ with st.sidebar:
     st.success("✅ PR-2 PDF Upload")
     st.success("✅ PR-3 Chunking")
     st.success("✅ PR-4 Embeddings")
-    st.write("⬜ PR-5 Vector Store")
-    st.write("⬜ PR-6 Basic RAG")
+    st.success("✅ PR-5 Vector Store")
+    st.success("✅ PR-6 Basic RAG")
 
     st.divider()
 
     st.subheader("Week 1 Progress")
-    st.progress(67)
+    st.progress(100)
 
 # --------------------------------------------------
 # Main Page
@@ -40,33 +41,49 @@ st.divider()
 # --------------------------------------------------
 # Upload Section
 # --------------------------------------------------
-st.subheader("📄 Upload Documents")
+st.subheader("📚 Build Knowledge Base")
 
 files = st.file_uploader(
-    "Upload your documents",
+    "Upload PDF or Markdown documents",
     type=["pdf", "md"],
     accept_multiple_files=True,
 )
 
 if files:
 
-    chunks, embeddings, dimension, elapsed = ingest_documents(files)
+    chunks, embeddings, dimension, elapsed, knowledge_base_size = ingest_documents(files)
 
-    st.success(f"Generated {len(chunks)} chunks.")
+    st.success(
+        f"Successfully indexed **{len(chunks)} chunks** into the knowledge base."
+    )
+
+    st.info(
+        "✅ Your documents have been embedded and indexed. "
+        "You can now ask questions in the section below."
+    )
 
     col1, col2, col3 = st.columns(3)
 
     with col1:
-        st.metric("Chunks", len(chunks))
+        st.metric(
+            "Chunks Generated",
+            len(chunks),
+        )
 
     with col2:
-        st.metric("Embedding Dimension", dimension)
+        st.metric(
+            "Knowledge Base Size",
+            knowledge_base_size,
+        )
 
     with col3:
-        st.metric("Embedding Time", f"{elapsed:.3f}s")
+        st.metric(
+            "Embedding Time",
+            f"{elapsed:.3f}s",
+        )
 
     selected_chunk = st.number_input(
-        "Preview Chunk",
+        "Preview Indexed Chunk",
         min_value=1,
         max_value=len(chunks),
         value=1,
@@ -77,11 +94,29 @@ if files:
     with st.expander("📄 Chunk Content", expanded=True):
         st.write(chunk.page_content)
 
-    with st.expander("🏷️ Metadata"):
+    with st.expander("🏷️ Chunk Metadata"):
         st.json(chunk.metadata)
 
-    with st.expander("🔢 Embedding Preview"):
-        st.write(embeddings[selected_chunk - 1][:20])  # First 20 values
+    with st.expander("📊 Knowledge Base Information"):
+
+        st.markdown(
+            f"""
+            **Embedding Model**
+            - embeddinggemma:latest
+
+            **Vector Store**
+            - FAISS (L2 Distance)
+
+            **Embedding Dimension**
+            - {dimension}
+
+            **Chunks Indexed This Upload**
+            - {len(chunks)}
+
+            **Embedding Time**
+            - {elapsed:.3f} seconds
+            """
+        )
 
 st.divider()
 
@@ -90,7 +125,57 @@ st.divider()
 # --------------------------------------------------
 st.subheader("💬 Ask Questions")
 
-st.info("🚧 Question Answering will be available after **PR-6 (Basic RAG)**.")
+question = st.text_input(
+    "Ask something about your uploaded documents"
+)
+
+if st.button("Ask", type="primary"):
+
+    if not question.strip():
+        st.warning("Please enter a question.")
+        st.stop()
+
+    response = ask(question)
+
+    st.success("Answer Generated")
+
+    with st.expander("💡 Answer", expanded=True):
+        st.write(response.answer)
+
+    col1, col2 = st.columns(2)
+
+    with col1:
+        st.metric(
+            "Prompt Tokens",
+            response.token_usage.get("input_tokens", "-")
+        )
+
+    with col2:
+        st.metric(
+            "Completion Tokens",
+            response.token_usage.get("output_tokens", "-")
+        )
+
+    with st.expander("⚡ Generation Details"):
+
+        st.write("**Finish Reason**")
+        st.code(response.finish_reason)
+
+        st.write("**Latency**")
+        st.code(f"{response.latency / 1_000_000:.2f} ms")
+
+    with st.expander("📚 Retrieved Chunks"):
+
+        for index, document in enumerate(response.documents, start=1):
+
+            st.markdown(f"### Chunk {index}")
+
+            st.write(document.page_content)
+
+            st.json(document.metadata)
+
+    with st.expander("🧠 Response Metadata"):
+        st.json(response.metadata)
 
 st.divider()
 

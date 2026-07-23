@@ -40,3 +40,11 @@ class EmbeddingService:
         dimension = len(vectors[0]) if vectors else 0
 
         return vectors, dimension, elapsed
+    
+    @classmethod
+    def generate_query_embedding(
+        cls,
+        query: str,
+    ) -> list[float]:
+
+        return cls._model.embed_query(query)

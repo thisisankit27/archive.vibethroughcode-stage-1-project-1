@@ -1,7 +1,9 @@
 from data.src.factory_pattern.document_loader_service import load_documents
 from data.src.strategy_pattern.chunk_service import chunk_documents
 from data.src.embeddings import EmbeddingService
+from data.src.vector_store import VectorStore
 
+vector_store = VectorStore()
 
 def ingest_documents(uploaded_files):
 
@@ -11,4 +13,7 @@ def ingest_documents(uploaded_files):
 
     embeddings, dimension, elapsed = EmbeddingService.generate_embeddings(chunks)
 
-    return chunks, embeddings, dimension, elapsed
+    vector_store.store(chunks, embeddings)
+    knowledge_base_size = vector_store.document_count()
+
+    return chunks, embeddings, dimension, elapsed, knowledge_base_size
