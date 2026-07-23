@@ -1,5 +1,9 @@
 streamlit
 langchain-community
+langchain-classic
 langchain-text-splitters
 unstructured
 markdown
+langchain_ollama
+langchain
+faiss-cpu
