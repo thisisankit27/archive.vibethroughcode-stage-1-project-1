@@ -7,3 +7,4 @@ markdown
 langchain_ollama
 langchain
 faiss-cpu
+rank_bm25

@@ -5,8 +5,6 @@ import faiss
 import numpy as np
 from langchain_core.documents import Document
 
-from data.src.embeddings import EmbeddingService
-
 
 INDEX_PATH = Path("./storage/my_index.index")
 DOCUMENTS_PATH = Path("./storage/documents.pkl")
