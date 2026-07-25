@@ -1,7 +1,7 @@
 from data.src.factory_pattern.document_loader_service import load_documents
 from data.src.strategy_pattern.chunk_service import chunk_documents
-from data.src.indexer.embeddings import EmbeddingService
-from data.src.indexer.vector_store import VectorStore
+from data.src.storage.embeddings import EmbeddingService
+from data.src.storage.vector_store import VectorStore
 from data.src.indexer.indexer import IndexerService
 
 vector_store = VectorStore()

@@ -10,26 +10,21 @@ st.set_page_config(
     page_icon="🦈",
     layout="wide",
 )
-
 # --------------------------------------------------
 # Sidebar
 # --------------------------------------------------
 with st.sidebar:
     st.header("🗺️ Project Roadmap")
 
-    st.success("✅ PR-1 Bootstrap")
+    st.success("✅ PR-7 Hybrid Retrieval")
 
-    st.success("✅ PR-2 PDF Upload")
-    st.success("✅ PR-3 Chunking")
-    st.success("✅ PR-4 Embeddings")
-    st.success("✅ PR-5 Vector Store")
-    st.success("✅ PR-6 Basic RAG")
+    st.info("🔜 PR-8 Metadata Filtering")
+    st.info("🔜 PR-9 Guardrails")
 
     st.divider()
 
-    st.subheader("Week 1 Progress")
-    st.progress(100)
-
+    st.subheader("Week 2 Progress")
+    st.progress(33)
 # --------------------------------------------------
 # Main Page
 # --------------------------------------------------
@@ -155,20 +150,20 @@ if st.button("Ask", type="primary"):
 
     response = ask(question)
 
-    st.success("Answer Generated")
+    st.success("✅ Answer Generated using Hybrid Retrieval (Dense + BM25 + RRF)")
 
     with st.expander("💡 Answer", expanded=True):
         st.write(response.answer)
 
-    col1, col2 = st.columns(2)
+    token_col1, token_col2 = st.columns(2)
 
-    with col1:
+    with token_col1:
         st.metric(
             "Prompt Tokens",
             response.token_usage.get("input_tokens", "-")
         )
 
-    with col2:
+    with token_col2:
         st.metric(
             "Completion Tokens",
             response.token_usage.get("output_tokens", "-")
@@ -184,45 +179,55 @@ if st.button("Ask", type="primary"):
 
     with st.expander("📚 Retrieved Chunks"):
 
-        for index, document in enumerate(response.documents, start=1):
+        st.info(f"Retrieved **{len(response.documents)}** fused chunks using Reciprocal Rank Fusion (RRF).")
 
-            st.markdown(f"### Chunk {index}")
+        for rank, document in enumerate(response.documents, start=1):
+
+            st.markdown(f"### Fusion Rank #{rank}")
 
             st.write(document.page_content)
 
-            st.json(document.metadata)
+            metadata_col1, metadata_col2 = st.columns(2)
+
+            with metadata_col1:
+                st.write("**Document ID**")
+                st.code(document.metadata.get("document_id", "-"))
+
+                st.write("**Chunk Index**")
+                st.code(document.metadata.get("chunk_index", "-"))
+
+            with metadata_col2:
+                st.write("**Chunk ID**")
+                st.code(document.metadata.get("chunk_id", "-"))
 
     with st.expander("🧠 Response Metadata"):
         st.json(response.metadata)
 
 st.divider()
-
 # --------------------------------------------------
 # Current Milestone
 # --------------------------------------------------
 st.subheader("📈 Current Milestone")
 
-st.write("**Week 1 • PR-3 Chunking Engine**")
+st.write("**Week 2 • PR-7 Hybrid Retrieval**")
 
 st.success(
     """
-    ✅ Project bootstrapped
+    ✅ Dense Retrieval (FAISS)
 
-    ✅ Streamlit prototype completed
+    ✅ Sparse Retrieval (BM25)
 
-    ✅ Multi-document upload
+    ✅ Reciprocal Rank Fusion (RRF)
 
-    ✅ Factory Pattern (Document Loaders)
+    ✅ Hybrid Search Pipeline
 
-    ✅ Strategy Pattern (Chunking Engine)
+    ✅ Chunk Identity (Document ID + Chunk ID)
 
-    ✅ Flyweight Pattern (Reusable Strategies)
+    ✅ Layered Retrieval Architecture
 
-    ✅ Recursive Character Chunking
+    ✅ Retrieval Strategy Abstraction
 
-    ✅ Chunk Preview & Metadata
-
-    ⏳ Next milestone: Embeddings & FAISS Vector Store
+    🚀 Next Milestone: Metadata Filtering
     """
 )
 
@@ -231,4 +236,4 @@ st.divider()
 # --------------------------------------------------
 # Footer
 # --------------------------------------------------
-st.caption("Built in Public ❤️ | Week 1 | PR-1 Bootstrap")
+st.caption("Built in Public ❤️ | Week 2 | PR-7 Hybrid Retrieval")

@@ -28,3 +28,7 @@ class SparseIndexer(ABC):
         Loads a previously persisted sparse index.
         """
         pass
+
+    @abstractmethod
+    def search(self, query: str, top_k: int) -> list[Document]:
+        pass

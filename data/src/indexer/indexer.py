@@ -1,9 +1,9 @@
 from pathlib import Path
-from data.src.indexer.embeddings import EmbeddingService
-from data.src.indexer.vector_store import VectorStore
+from data.src.storage.embeddings import EmbeddingService
+from data.src.storage.vector_store import VectorStore
 
 #similarly import service for constructing sparse matrix
-from data.src.indexer.bm25indexing import BM25Indexer
+from data.src.storage.bm25indexing import BM25Indexer
 
 vector_store = VectorStore()
 sparse_index = BM25Indexer()
