@@ -1,5 +1,5 @@
-from data.src.embeddings import EmbeddingService
-from data.src.vector_store import VectorStore
+from data.src.indexer.embeddings import EmbeddingService
+from data.src.indexer.vector_store import VectorStore
 from data.src.generation_service import GenerationService
 
 TOP_K = 3

@@ -51,18 +51,28 @@ files = st.file_uploader(
 
 if files:
 
-    chunks, embeddings, dimension, elapsed, knowledge_base_size = ingest_documents(files)
+    (
+        chunks,
+        embeddings,
+        dimension,
+        elapsed,
+        knowledge_base_size,
+        sparse_stats,
+    ) = ingest_documents(files)
 
     st.success(
         f"Successfully indexed **{len(chunks)} chunks** into the knowledge base."
     )
 
     st.info(
-        "✅ Your documents have been embedded and indexed. "
-        "You can now ask questions in the section below."
+        "✅ Your knowledge base has been built using both dense (FAISS) and sparse (BM25) indexing."
     )
 
-    col1, col2, col3 = st.columns(3)
+    # --------------------------------------------------
+    # Metrics
+    # --------------------------------------------------
+
+    col1, col2, col3, col4 = st.columns(4)
 
     with col1:
         st.metric(
@@ -81,6 +91,14 @@ if files:
             "Embedding Time",
             f"{elapsed:.3f}s",
         )
+
+    with col4:
+        st.metric(
+            "Vocabulary Size",
+            sparse_stats["vocabulary_size"],
+        )
+
+    st.divider()
 
     selected_chunk = st.number_input(
         "Preview Indexed Chunk",
