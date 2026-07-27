@@ -11,4 +11,5 @@ class DenseRetriever:
     def retrieve(cls, query: str, top_k: int) -> list[Document]:
         query_embedding = EmbeddingService.generate_query_embedding(query)
         matched_dense_vector_docs = _vector_store.search(query_embedding, top_k)
+
         return matched_dense_vector_docs
