@@ -1,5 +1,6 @@
 import streamlit as st
 from data.src.ingestion import ingest_documents
+from data.src.metadata.metadata_catalog import MetadataCatalog
 from data.src.rag import ask
 
 # --------------------------------------------------
@@ -10,6 +11,17 @@ st.set_page_config(
     page_icon="🦈",
     layout="wide",
 )
+
+# --------------------------------------------------
+# Session State
+# --------------------------------------------------
+if "knowledge_base" not in st.session_state:
+    st.session_state.knowledge_base = None
+
+if "last_upload_signature" not in st.session_state:
+    st.session_state.last_upload_signature = None
+
+
 # --------------------------------------------------
 # Sidebar
 # --------------------------------------------------
@@ -44,16 +56,49 @@ files = st.file_uploader(
     accept_multiple_files=True,
 )
 
-if files:
+if st.button("Build Knowledge Base"):
 
-    (
-        chunks,
-        embeddings,
-        dimension,
-        elapsed,
-        knowledge_base_size,
-        sparse_stats,
-    ) = ingest_documents(files)
+    if not files:
+        st.warning("Please upload one or more documents.")
+        st.stop()
+
+    upload_signature = tuple(
+        (file.name, file.size)
+        for file in files
+    )
+
+    if st.session_state.last_upload_signature != upload_signature:
+
+        (
+            chunks,
+            embeddings,
+            dimension,
+            elapsed,
+            knowledge_base_size,
+            sparse_stats,
+        ) = ingest_documents(files)
+
+        st.session_state.knowledge_base = {
+            "chunks": chunks,
+            "embeddings": embeddings,
+            "dimension": dimension,
+            "elapsed": elapsed,
+            "knowledge_base_size": knowledge_base_size,
+            "sparse_stats": sparse_stats,
+        }
+
+        st.session_state.last_upload_signature = upload_signature
+
+if st.session_state.knowledge_base:
+
+    kb = st.session_state.knowledge_base
+
+    chunks = kb["chunks"]
+    embeddings = kb["embeddings"]
+    dimension = kb["dimension"]
+    elapsed = kb["elapsed"]
+    knowledge_base_size = kb["knowledge_base_size"]
+    sparse_stats = kb["sparse_stats"]
 
     st.success(
         f"Successfully indexed **{len(chunks)} chunks** into the knowledge base."
@@ -134,6 +179,27 @@ if files:
 st.divider()
 
 # --------------------------------------------------
+# Metadata Filters
+# --------------------------------------------------
+st.subheader("🔍 Retrieval Filters")
+
+available_documents = MetadataCatalog.list_documents()
+
+selected_documents = st.multiselect(
+    "Limit retrieval to specific documents",
+    options=available_documents,
+    default=available_documents,
+    format_func=lambda document: document["display_name"],
+)
+
+filters = {
+    "document_ids": [
+        document["document_id"]
+        for document in selected_documents
+    ]
+}
+
+# --------------------------------------------------
 # Question Answering Section
 # --------------------------------------------------
 st.subheader("💬 Ask Questions")
@@ -148,7 +214,7 @@ if st.button("Ask", type="primary"):
         st.warning("Please enter a question.")
         st.stop()
 
-    response = ask(question)
+    response = ask(question, filters)
 
     st.success("✅ Answer Generated using Hybrid Retrieval (Dense + BM25 + RRF)")
 

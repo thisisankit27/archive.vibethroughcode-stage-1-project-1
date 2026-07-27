@@ -1,6 +1,7 @@
 streamlit
 langchain-community
 langchain-classic
+langchain-core
 langchain-text-splitters
 unstructured
 markdown
