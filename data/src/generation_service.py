@@ -26,16 +26,7 @@ class GenerationService:
     
     @classmethod
     def generate_answer(cls, user_query, retrieved_documents) -> GenerationResponse:
-        if not retrieved_documents:
-            return GenerationResponse(
-                answer="I cannot find the answer in the provided documents.",
-                metadata={},
-                token_usage={},
-                finish_reason="retrieval_failed",
-                latency=0,
-                documents=[],
-            )
-        
+
         formatted_prompt = cls._prompt_template.format(
             context = cls.__generate_context(retrieved_documents),
             user_query = user_query
@@ -43,6 +34,7 @@ class GenerationService:
         llm_response = cls.__invoke(formatted_prompt)
 
         return GenerationResponse(
+            success=True,
             answer=llm_response.content,
             metadata=llm_response.response_metadata,
             token_usage=llm_response.usage_metadata,
