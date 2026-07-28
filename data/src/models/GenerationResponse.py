@@ -4,9 +4,15 @@ from langchain_core.documents import Document
 @dataclass
 class GenerationResponse:
 
-    answer: str
-    metadata: dict
-    token_usage: dict
-    finish_reason: str
-    latency: float
-    documents: list[Document]
+    success: bool
+
+    answer: str | None = None
+
+    metadata: dict | None = None
+    token_usage: dict | None = None
+    finish_reason: str | None = None
+    latency: float | None = None
+    documents: list[Document] | None = None
+
+    reason: str | None = None
+    message: str | None = None

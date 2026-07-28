@@ -210,11 +210,11 @@ question = st.text_input(
 
 if st.button("Ask", type="primary"):
 
-    if not question.strip():
-        st.warning("Please enter a question.")
-        st.stop()
-
     response = ask(question, filters)
+
+    if not response.success:
+        st.error(response.message)
+        st.stop()
 
     st.success("✅ Answer Generated using Hybrid Retrieval (Dense + BM25 + RRF)")
 
