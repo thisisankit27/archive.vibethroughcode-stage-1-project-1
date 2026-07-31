@@ -1,37 +1,58 @@
+from operator import itemgetter
+
+from langchain_core.documents import Document
+from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.runnables import RunnableLambda, RunnableParallel
 from langchain_ollama import ChatOllama
+
 from data.src.models.GenerationResponse import GenerationResponse
+
+_SYSTEM_PROMPT = """You are a factual assistant. Your task is to answer the user's question using ONLY the provided search results.
+
+<rules>
+1. Base your answer strictly on the facts inside the <context> tags.
+2. If the context does not contain the answer, reply exactly with: "I cannot find the answer in the provided documents."
+3. Do not use any outside knowledge, assumptions, or speculation.
+4. Keep the response factual, objective, and under 3 sentences.
+</rules>"""
+
+_HUMAN_PROMPT = """<context>
+{context}
+</context>
+
+Question: {user_query}"""
+
+
+def _format_documents(retrieved_documents: list[Document]) -> str:
+    return "\n\n".join(document.page_content for document in retrieved_documents)
+
 
 class GenerationService:
     _llm = ChatOllama(
         model="llama3.2:latest"
     )
 
-    _prompt_template = """
-        You are a factual assistant. Your task is to answer the user's question using ONLY the provided search results.
+    _prompt = ChatPromptTemplate.from_messages([
+        ("system", _SYSTEM_PROMPT),
+        ("human", _HUMAN_PROMPT),
+    ])
 
-        <context>
-        {context}
-        </context>
+    _chain = (
+        RunnableParallel(
+            context=itemgetter("documents") | RunnableLambda(_format_documents),
+            user_query=itemgetter("user_query"),
+        )
+        | _prompt
+        | _llm
+    )
 
-        <rules>
-        1. Base your answer strictly on the facts inside the <context> tags.
-        2. If the context does not contain the answer, reply exactly with: "I cannot find the answer in the provided documents."
-        3. Do not use any outside knowledge, assumptions, or speculation.
-        4. Keep the response factual, objective, and under 3 sentences.
-        </rules>
-
-        Question: {user_query}
-        Answer:
-        """
-    
     @classmethod
     def generate_answer(cls, user_query, retrieved_documents) -> GenerationResponse:
 
-        formatted_prompt = cls._prompt_template.format(
-            context = cls.__generate_context(retrieved_documents),
-            user_query = user_query
-        )
-        llm_response = cls.__invoke(formatted_prompt)
+        llm_response = cls._chain.invoke({
+            "documents": retrieved_documents,
+            "user_query": user_query,
+        })
 
         return GenerationResponse(
             success=True,
@@ -42,12 +63,3 @@ class GenerationService:
             latency=llm_response.response_metadata.get("total_duration"),
             documents=retrieved_documents,
         )
-
-
-    @classmethod
-    def __generate_context(cls, retrieved_documents):
-        return "\n\n".join([doc.page_content for doc in retrieved_documents])
-
-    @classmethod
-    def __invoke(cls, prompt):
-        return cls._llm.invoke(prompt)
