@@ -28,15 +28,17 @@ if "last_upload_signature" not in st.session_state:
 with st.sidebar:
     st.header("🗺️ Project Roadmap")
 
-    st.success("✅ PR-7 Hybrid Retrieval")
+    st.success("✅ Week 1 — Core RAG (PR-1 → PR-6)")
 
-    st.info("🔜 PR-8 Metadata Filtering")
-    st.info("🔜 PR-9 Guardrails")
+    st.success("✅ Week 2 — Deepen RAG (PR-7 → PR-9)")
+    st.success("✅ Week 3 — LCEL (PR-10 → PR-11)")
+
+    st.info("🔜 Week 4 — Production Readiness")
 
     st.divider()
 
-    st.subheader("Week 2 Progress")
-    st.progress(33)
+    st.subheader("Week 3 Progress")
+    st.progress(100)
 # --------------------------------------------------
 # Main Page
 # --------------------------------------------------
@@ -221,6 +223,12 @@ if st.button("Ask", type="primary"):
     with st.expander("💡 Answer", expanded=True):
         st.write(response.answer)
 
+        if response.sources:
+            st.divider()
+            st.caption("**Sources**")
+            for source in response.sources:
+                st.caption(f"`[{source.label}]` {source.display_name}")
+
     token_col1, token_col2 = st.columns(2)
 
     with token_col1:
@@ -245,11 +253,14 @@ if st.button("Ask", type="primary"):
 
     with st.expander("📚 Retrieved Chunks"):
 
-        st.info(f"Retrieved **{len(response.documents)}** fused chunks using Reciprocal Rank Fusion (RRF).")
+        st.info(f"Retrieved **{len(response.sources)}** fused chunks using Reciprocal Rank Fusion (RRF).")
 
-        for rank, document in enumerate(response.documents, start=1):
+        for rank, source in enumerate(response.sources, start=1):
 
-            st.markdown(f"### Fusion Rank #{rank}")
+            document = source.document
+
+            st.markdown(f"### `[{source.label}]` — {source.display_name}")
+            st.caption(f"Fusion Rank #{rank}")
 
             st.write(document.page_content)
 
@@ -264,7 +275,7 @@ if st.button("Ask", type="primary"):
 
             with metadata_col2:
                 st.write("**Chunk ID**")
-                st.code(document.metadata.get("chunk_id", "-"))
+                st.code(source.chunk_id or "-")
 
     with st.expander("🧠 Response Metadata"):
         st.json(response.metadata)
@@ -275,25 +286,23 @@ st.divider()
 # --------------------------------------------------
 st.subheader("📈 Current Milestone")
 
-st.write("**Week 2 • PR-7 Hybrid Retrieval**")
+st.write("**Week 3 • LCEL Refactor — Complete**")
 
 st.success(
     """
-    ✅ Dense Retrieval (FAISS)
+    ✅ LCEL Composition (RunnableParallel | Prompt | LLM)
 
-    ✅ Sparse Retrieval (BM25)
+    ✅ System / Human Prompt Separation
 
-    ✅ Reciprocal Rank Fusion (RRF)
+    ✅ Framework-Independent Business Layer
 
-    ✅ Hybrid Search Pipeline
+    ✅ Labelled Source Context
 
-    ✅ Chunk Identity (Document ID + Chunk ID)
+    ✅ Inline Citations
 
-    ✅ Layered Retrieval Architecture
+    ✅ Deterministic Citation Verification
 
-    ✅ Retrieval Strategy Abstraction
-
-    🚀 Next Milestone: Metadata Filtering
+    🚀 Next Milestone: Week 4 — Production Readiness
     """
 )
 
@@ -302,4 +311,4 @@ st.divider()
 # --------------------------------------------------
 # Footer
 # --------------------------------------------------
-st.caption("Built in Public ❤️ | Week 2 | PR-7 Hybrid Retrieval")
+st.caption("Built in Public ❤️ | Week 3 | LCEL Refactor & Citations")
