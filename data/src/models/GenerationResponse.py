@@ -1,5 +1,7 @@
 from dataclasses import dataclass
-from langchain_core.documents import Document
+
+from data.src.models.CitedSource import CitedSource
+
 
 @dataclass
 class GenerationResponse:
@@ -12,7 +14,7 @@ class GenerationResponse:
     token_usage: dict | None = None
     finish_reason: str | None = None
     latency: float | None = None
-    documents: list[Document] | None = None
+    sources: list[CitedSource] | None = None
 
     reason: str | None = None
     message: str | None = None
