@@ -1,7 +1,63 @@
+import time
+
 import streamlit as st
 from data.src.ingestion import ingest_documents
 from data.src.metadata.metadata_catalog import MetadataCatalog
-from data.src.rag import ask
+from data.src.rag import ask_stream
+
+# --------------------------------------------------
+# Typewriter rendering
+# --------------------------------------------------
+# The backend flushes in blocks of ~20 tokens, because that is the window it needs to
+# guarantee a citation marker is never split across a flush. Rendered directly, those
+# blocks land as visible bursts.
+#
+# This is a PRESENTATION problem, so it is fixed here and not by shrinking the buffer.
+# Lowering FLUSH_FLOOR would smooth the render too - by shrinking the policy window and
+# running the guardrails once per token. Never weaken a safety mechanism to fix how
+# something looks.
+#
+# Pacing is adaptive rather than a fixed delay. Each block is spread over roughly the
+# time the model took to produce it, so the typing speed tracks the model instead of
+# guessing at it:
+#   - model slow  -> we type slowly, no stall waiting for the next block
+#   - model fast  -> blocks are already queued, wait ~0, delay clamps to the floor and
+#                    the animation catches up
+# Self-correcting, because falling behind makes the next measured wait smaller.
+
+_SLICE = 3          # characters yielded per repaint; 1 is smoother but repaints 3x more
+_MIN_DELAY = 0.002  # floor - stops it spinning when blocks are already buffered
+_MAX_DELAY = 0.015  # ceiling - stops one slow block (or model warm-up) crawling
+_FIRST_DELAY = 0.008  # used for block 1, which has no previous interval to measure
+
+
+def typewriter(blocks):
+    """Re-emit the backend's flushed blocks as a smooth character stream."""
+
+    iterator = iter(blocks)
+
+    while True:
+        # Time spent inside next() is time the MODEL was working. Measuring it here -
+        # rather than around the whole loop - keeps our own sleeping out of the number,
+        # which would otherwise make the pacing self-referential.
+        started_waiting = time.perf_counter()
+        try:
+            block = next(iterator)
+        except StopIteration:
+            break
+        waited = time.perf_counter() - started_waiting
+
+        if not block:
+            continue
+
+        # Spread this block's characters across the time the next one is expected to
+        # take. First block has nothing to measure against, so use a sane default.
+        per_char = _FIRST_DELAY if waited == 0 else waited / len(block)
+        delay = min(max(per_char, _MIN_DELAY), _MAX_DELAY) * _SLICE
+
+        for position in range(0, len(block), _SLICE):
+            yield block[position:position + _SLICE]
+            time.sleep(delay)
 
 # --------------------------------------------------
 # Page Configuration
@@ -212,22 +268,39 @@ question = st.text_input(
 
 if st.button("Ask", type="primary"):
 
-    response = ask(question, filters)
+    # Returns immediately with a handle. No model call has happened yet - generation
+    # starts when st.write_stream below begins pulling from handle.tokens.
+    stream = ask_stream(question, filters)
 
+    st.markdown("#### 💡 Answer")
+
+    # write_stream renders whatever the generator yields and blocks until it is
+    # exhausted. typewriter() sits between the two purely to smooth the cadence - it
+    # changes nothing about the text, the order, or the sanitizing already applied.
+    # The answer is no longer inside an expander: collapsing a region that is actively
+    # being written to defeats the point of streaming.
+    st.write_stream(typewriter(stream.tokens))
+
+    # Only readable AFTER the stream is consumed - that is when _stream_tokens
+    # assembles it. If a guardrail rejected before generation, the loop above
+    # rendered nothing and this was already populated.
+    response = stream.response
+
+    # Note the ordering consequence of streaming: an output validator can only reject
+    # here, once the text is already on screen. The error appears BELOW an answer the
+    # user has read. That is the honest cost of streaming, not a bug to paper over.
     if not response.success:
         st.error(response.message)
         st.stop()
 
-    st.success("✅ Answer Generated using Hybrid Retrieval (Dense + BM25 + RRF)")
+    st.success("✅ Answer Generated using Hybrid Retrieval (Dense + BM25 + RRF) with Verified Citations")
 
-    with st.expander("💡 Answer", expanded=True):
-        st.write(response.answer)
-
-        if response.sources:
-            st.divider()
-            st.caption("**Sources**")
-            for source in response.sources:
-                st.caption(f"`[{source.label}]` {source.display_name}")
+    # Rendered after the stream because [n] can only be resolved to a filename once
+    # the full set of markers is known.
+    if response.sources:
+        st.caption("**Sources**")
+        for source in response.sources:
+            st.caption(f"`[{source.label}]` {source.display_name}")
 
     token_col1, token_col2 = st.columns(2)
 
