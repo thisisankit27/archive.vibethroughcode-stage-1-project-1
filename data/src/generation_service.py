@@ -7,25 +7,7 @@ from langchain_ollama import ChatOllama
 
 from data.src.models.CitedSource import CitedSource
 from data.src.models.GenerationResponse import GenerationResponse
-
-_SYSTEM_PROMPT = """You are a factual assistant. Your task is to answer the user's question using ONLY the provided search results.
-
-Each search result is wrapped in a <source> tag carrying an id, like <source id="1" file="notes.md">.
-
-<rules>
-1. Base your answer strictly on the facts inside the <context> tags.
-2. If the context does not contain the answer, reply exactly with: "I cannot find the answer in the provided documents."
-3. Do not use any outside knowledge, assumptions, or speculation.
-4. Keep the response factual, objective, and under 3 sentences.
-5. Cite your sources. Immediately after each sentence, add the id of every source you used for it, in square brackets: [1]. If a sentence draws on more than one source, cite each of them: [1][3].
-6. Only cite ids that appear in the <source> tags above. Never invent an id.
-</rules>"""
-
-_HUMAN_PROMPT = """<context>
-{context}
-</context>
-
-Question: {user_query}"""
+from data.src.prompts import HUMAN_PROMPT, SYSTEM_PROMPT
 
 
 def _label_sources(retrieved_documents: list[Document]) -> list[CitedSource]:
@@ -50,8 +32,8 @@ class GenerationService:
     )
 
     _prompt = ChatPromptTemplate.from_messages([
-        ("system", _SYSTEM_PROMPT),
-        ("human", _HUMAN_PROMPT),
+        ("system", SYSTEM_PROMPT),
+        ("human", HUMAN_PROMPT),
     ])
 
     _chain = (
