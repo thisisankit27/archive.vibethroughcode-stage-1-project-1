@@ -36,21 +36,48 @@ def _check_empty_response(response: GenerationResponse) -> GenerationResponse | 
 
 # Drops citation markers the model invented, keeping the answer itself intact.
 # A wrong attribution is worse than a missing one, but both beat discarding a good answer.
-def _strip_unverified_citations(generation_response: GenerationResponse) -> None:
-    answer = generation_response.answer
-    if not answer:
-        return
+#
+# PR-12a split this into a pure function plus an adapter. Reason: the streaming path
+# has no GenerationResponse yet when it needs to sanitize - it only has a string. Rather
+# than duplicate the regex logic, the logic moved to a function that takes text and
+# returns text, and the original signature became a thin wrapper over it.
+# Same move as _format_documents in PR-10: if it doesn't need the object, don't take it.
+def strip_unverified_citations(text: str | None, sources: list[CitedSource] | None) -> str | None:
+    """Remove [n] markers whose label was never issued for this request.
+
+    Pure: text in, text out. No framework types, no domain object, no I/O - so it is
+    unit-testable with a plain assert and callable from both the streaming and the
+    non-streaming path.
+
+    Verification is deterministic set membership, not an LLM call. Citation *existence*
+    is structurally checkable in code; citation *supportiveness* is judgment and stays
+    in _validate_relevance.
+    """
+    if not text:
+        return text
 
     valid_labels = {
         source.label
-        for source in (generation_response.sources or [])
+        for source in (sources or [])
     }
 
     def _keep_verified(match: re.Match) -> str:
         cited_label = match.group(1)
         return match.group(0) if cited_label in valid_labels else ""
 
-    generation_response.answer = _CITATION_PATTERN.sub(_keep_verified, answer)
+    return _CITATION_PATTERN.sub(_keep_verified, text)
+
+
+def _strip_unverified_citations(generation_response: GenerationResponse) -> None:
+    """Adapter: applies the sanitizer to a GenerationResponse, in place.
+
+    Exists so validate_output()'s call site is unchanged. Still a sanitizer, not a
+    validator - it repairs and returns None, it never rejects.
+    """
+    generation_response.answer = strip_unverified_citations(
+        generation_response.answer,
+        generation_response.sources,
+    )
 
 def _validate_relevance(response: str, sources: list[CitedSource]) -> GenerationResponse | None:
     #Helper LLM (future)
