@@ -5,7 +5,13 @@ import streamlit as st
 from data.src.ingestion import ingest_documents
 from data.src.metadata.metadata_catalog import MetadataCatalog
 from data.src.models.GenerationResponse import GenerationResponse
+from data.src.observability import configure_logging
 from data.src.rag import ask_stream
+
+# Idempotent by design - Streamlit re-executes this script on every interaction, so a naive
+# setup would attach a second file handler, then a third: duplicated lines and leaked file
+# descriptors growing for the life of the session.
+configure_logging()
 
 
 # --------------------------------------------------
@@ -33,6 +39,11 @@ class ChatTurn:
     # Tokens" metric describe two different calls at once. Two costs, two fields - and
     # the sidebar reports them as two different things, because they are.
     summary_token_usage: dict | None = None
+
+    # PR-14b. The events this turn emitted, kept so the trace survives rerun exactly like the
+    # answer does. A trace you can only see while the answer is being generated is useless -
+    # you look at it *because* an answer was bad, which is always after the fact.
+    trace: list | None = None
 
 # --------------------------------------------------
 # Typewriter rendering
@@ -167,14 +178,55 @@ def conversation_totals(turns: list[ChatTurn]) -> dict:
     return totals
 
 
-def render_reply_details(response: GenerationResponse) -> None:
+def render_trace(trace: list | None) -> None:
+    """The turn's event log, oldest first.
+
+    Rendered as a table rather than prose because the useful questions are comparative -
+    which stage was slow, how many chunks came back, whether citations were stripped - and
+    prose cannot be scanned that way.
+    """
+    if not trace:
+        st.caption("No trace recorded for this turn.")
+        return
+
+    start = trace[0]["at"]
+
+    st.dataframe(
+        [
+            {
+                "+ms": round((event["at"] - start) * 1000),
+                "event": event["event"],
+                "source": event["logger"],
+                "detail": "  ".join(
+                    f"{key}={value}"
+                    for key, value in event["fields"].items()
+                    if value is not None
+                ),
+            }
+            for event in trace
+        ],
+        use_container_width=True,
+        hide_index=True,
+    )
+
+    st.caption(
+        "Also written to `storage/app.log`, rotated at midnight, 7 kept. "
+        "Counts and verdicts only — never document content."
+    )
+
+
+def render_reply_details(response: GenerationResponse, trace: list | None = None) -> None:
     """Everything under an assistant reply: sources, per-turn cost, chunks, metadata.
 
     Shared by both render paths - a turn replayed from history and a turn that has just
     finished streaming render identically below the answer text. Only the answer itself
     is animated, and only once.
     """
+    # The trace renders even for a rejected turn - a refusal is exactly when you want to see
+    # which guardrail fired and why.
     if not response.success:
+        with st.expander("ℹ️ Details"):
+            render_trace(trace)
         return
 
     # Sources stay visible - they are part of the answer's credibility, not diagnostics -
@@ -196,8 +248,8 @@ def render_reply_details(response: GenerationResponse) -> None:
     # an expander.
     with st.expander("ℹ️ Details"):
 
-        cost_tab, chunks_tab, metadata_tab = st.tabs(
-            ["Cost", "Retrieved Chunks", "Raw Metadata"]
+        cost_tab, chunks_tab, trace_tab, metadata_tab = st.tabs(
+            ["Cost", "Retrieved Chunks", "Trace", "Raw Metadata"]
         )
 
         with cost_tab:
@@ -245,6 +297,9 @@ def render_reply_details(response: GenerationResponse) -> None:
                     st.code(source.chunk_id or "-")
 
                 st.divider()
+
+        with trace_tab:
+            render_trace(trace)
 
         with metadata_tab:
             st.json(response.metadata)
@@ -542,7 +597,7 @@ for past_turn in st.session_state.conversation:
             # history a misleading account of the session.
             st.error(past_turn.response.message)
 
-        render_reply_details(past_turn.response)
+        render_reply_details(past_turn.response, past_turn.trace)
 
 # ---- NEW TURN ---------------------------------------------------------------------
 # chat_input returns the submitted text only on the run where it was submitted, and
@@ -583,7 +638,7 @@ if question:
         if not response.success:
             st.error(response.message)
 
-        render_reply_details(response)
+        render_reply_details(response, stream.trace)
 
     # PROMOTION: transient -> session. Appending AFTER rendering is what prevents a
     # double render - the replay loop above already ran this pass with the old history.
@@ -597,6 +652,7 @@ if question:
             question=question,
             response=response,
             summary_token_usage=stream.summary_token_usage,
+            trace=stream.trace,
         )
     )
 

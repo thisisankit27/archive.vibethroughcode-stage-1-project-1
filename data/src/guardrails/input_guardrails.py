@@ -1,5 +1,8 @@
 from data.src.guardrails.text_policy import contains_injection_attempt
 from data.src.models.GenerationResponse import GenerationResponse
+from data.src.observability import get_logger, log_event
+
+_logger = get_logger("guardrails.input")
 
 # NOTE (PR-13): this runs on the RAW user question only, never on the question with the
 # conversation summary concatenated. Two reasons:
@@ -23,6 +26,10 @@ def validate_input(query: str) -> GenerationResponse | None:
 
 def _check_empty_query(query: str) -> GenerationResponse | None:
     if not query.strip():
+        # The unit that made the decision is the one that reports it - it is the only thing
+        # that knows WHY. Routing this up to rag.py would make the orchestrator responsible
+        # for knowing what each guardrail checks.
+        log_event(_logger, "guardrail.rejected", reason="EMPTY_QUERY")
         return GenerationResponse(
                 success=False,
                 reason="EMPTY_QUERY",
@@ -36,6 +43,14 @@ def _check_prompt_injection(query: str) -> GenerationResponse | None:
     # use the identical rule. Here the consequence is REJECT: the user typed it, so the
     # user can rephrase it.
     if contains_injection_attempt(query):
+        # The query itself is NOT logged. Knowing an injection attempt was blocked is the
+        # diagnostic fact; storing the attacker's payload in a durable file is not.
+        log_event(
+            _logger,
+            "guardrail.rejected",
+            reason="PROMPT_INJECTION",
+            query_chars=len(query),
+        )
         return GenerationResponse(
                 success=False,
                 reason="PROMPT_INJECTION",
