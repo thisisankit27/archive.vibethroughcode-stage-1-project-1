@@ -15,6 +15,9 @@ storage onto a mounted volume, tuning retrieval, pointing at a remote Ollama.
     CHUNK_OVERLAP           300
     STORAGE_DIR             ./storage
     FLUSH_FLOOR             20
+    LOG_FILE                ./storage/app.log
+    LOG_LEVEL               INFO
+    LOG_RETENTION_DAYS      7
 
 WHY ENVIRONMENT VARIABLES AND NOT A FILE
 
@@ -112,6 +115,23 @@ DENSE_INDEX_PATH = STORAGE_DIR / "my_index.index"
 SPARSE_INDEX_PATH = STORAGE_DIR / "bm25.index"
 DOCUMENTS_PATH = STORAGE_DIR / "documents.pkl"
 CATALOG_PATH = STORAGE_DIR / "metadata_catalog.json"
+
+
+# --------------------------------------------------
+# Logging
+# --------------------------------------------------
+# NOTE the directory. Logs go under STORAGE_DIR (./storage) - NOT under data/src/storage/,
+# which is a Python PACKAGE holding vector_store.py, embeddings.py and friends. Those two
+# names are a genuine trap in this repo: one is the module that knows how to persist, the
+# other is where persisted things live. Runtime artifacts never go in a source tree - among
+# other reasons, a container image's code directory is read-only.
+LOG_FILE = Path(_env_str("LOG_FILE", str(STORAGE_DIR / "app.log")))
+
+LOG_LEVEL = _env_str("LOG_LEVEL", "INFO")
+
+# How many rotated files to keep. With midnight rotation this is "a week of days on which the
+# app actually ran" - the rollover check happens on write, so nothing rotates while idle.
+LOG_RETENTION_DAYS = _env_int("LOG_RETENTION_DAYS", 7)
 
 
 # --------------------------------------------------

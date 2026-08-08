@@ -26,7 +26,10 @@ from langchain_core.prompts import ChatPromptTemplate
 from langchain_ollama import ChatOllama
 
 from data.src.config import OLLAMA_BASE_URL, SUMMARIZATION_MODEL
+from data.src.observability import get_logger, log_event, stage
 from data.src.prompts import SUMMARY_HUMAN_PROMPT, SUMMARY_SYSTEM_PROMPT
+
+_logger = get_logger("summarization")
 
 
 class SummarizationService:
@@ -64,13 +67,25 @@ class SummarizationService:
         would make the cost meter quietly understate by roughly half.
         """
 
-        message = cls._chain.invoke({
-            # An empty string rather than None: the prompt template renders it into the
-            # <previous_summary> block either way, and "None" would be a literal word the
-            # model reads as content.
-            "previous_summary": previous_summary or "",
-            "user_query": user_query,
-            "answer": answer,
-        })
+        # Timed even though it is off the critical path - if this ever grows to seconds it
+        # would still be felt as the page staying busy after the answer finished.
+        with stage(_logger, "summarization", had_previous=bool(previous_summary)):
+            message = cls._chain.invoke({
+                # An empty string rather than None: the prompt template renders it into the
+                # <previous_summary> block either way, and "None" would be a literal word the
+                # model reads as content.
+                "previous_summary": previous_summary or "",
+                "user_query": user_query,
+                "answer": answer,
+            })
 
-        return message.content, (message.usage_metadata or {})
+        usage = message.usage_metadata or {}
+
+        log_event(
+            _logger,
+            "summarization.cost",
+            input_tokens=usage.get("input_tokens"),
+            output_tokens=usage.get("output_tokens"),
+        )
+
+        return message.content, usage

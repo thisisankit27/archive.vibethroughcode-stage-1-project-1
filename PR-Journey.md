@@ -631,7 +631,7 @@ which ones break — and why — *is* the lesson.
 
 ---
 
-## Carried-over defects — where each one lands
+### Carried-over defects — where each one lands
 
 Logged during Weeks 2–3, deliberately not fixed at the time. Each has an owner now:
 
@@ -646,7 +646,7 @@ Logged during Weeks 2–3, deliberately not fixed at the time. Each has an owner
 
 ---
 
-# Final Project Structure
+### Final Project Structure
 
 ```text
 Knowledge Assistant v1
@@ -672,7 +672,7 @@ Knowledge Assistant v1
 
 ---
 
-# Why I like this roadmap
+### Why I like this roadmap
 
 Each PR satisfies four goals simultaneously:
 

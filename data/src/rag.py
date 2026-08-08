@@ -26,7 +26,10 @@ from data.src.guardrails.output_guardrails import (
     validate_output,
     validate_summary,
 )
+from data.src.observability import end_turn, get_logger, log_event, stage, start_turn
 from data.src.summarization_service import SummarizationService
+
+_logger = get_logger("rag")
 
 # PR-14a: these moved to config.py. Re-exported here so every call site in this module
 # keeps reading like a local constant.
@@ -74,6 +77,17 @@ class StreamedAnswer:
     # memory untouched rather than wiping it.
     summary: str | None = None
     summary_token_usage: dict | None = None
+
+    # PR-14b. Every event logged during this turn, in order.
+    #
+    # On StreamedAnswer rather than GenerationResponse for the same reason the summary is:
+    # it describes the whole TURN - including the summarization that runs after the response
+    # exists - and would be meaningless on the rejection objects guardrails return.
+    #
+    # MUTABLE and shared, not a snapshot. `_refresh_summary` appends to it after
+    # `handle.response` has already been assigned, so a copy taken at that moment would
+    # silently drop every summary event. Same lesson as PR-12's stale sidebar.
+    trace: list = field(default_factory=list)
 
 
 def _build_retrieval_query(summary: str | None, query: str) -> str:
@@ -134,10 +148,25 @@ def _retrieve_context(
     if rejection:
         return None, rejection
 
-    documents = RetrievalService.retrieve(
-        _build_retrieval_query(summary, query),
-        TOP_K,
-        filters,
+    retrieval_query = _build_retrieval_query(summary, query)
+
+    with stage(_logger, "retrieval", top_k=TOP_K):
+        documents = RetrievalService.retrieve(retrieval_query, TOP_K, filters)
+
+    # `summary_prefixed` is the signal for PR-13's documented topic-change limitation: when it
+    # is True the retrieval query was dominated by the conversation summary, so a result set
+    # that looks unrelated to the question has an explanation sitting right next to it.
+    #
+    # Chunk IDs, not chunk text - enough to see WHICH chunks came back and notice the same
+    # irrelevant one appearing every time, without writing document content to a durable file.
+    log_event(
+        _logger,
+        "retrieval.done",
+        returned=len(documents),
+        requested=TOP_K,
+        summary_prefixed=bool(summary),
+        filtered_documents=len(filters.get("document_ids", [])),
+        chunk_ids=[document.metadata.get("chunk_id") for document in documents],
     )
 
     rejection = validate_context(query, documents)
@@ -224,8 +253,21 @@ def ask_stream(
     nothing at time-to-first-token: the expensive part happened last turn.
     """
 
+    # Begin collecting this turn's events. The list is handed straight to the handle, so
+    # everything logged from here until end_turn() lands in handle.trace - at any call depth,
+    # without a single service signature growing an argument for it.
+    trace, trace_token = start_turn()
+
     # Seeded with the incoming summary so every early-return path leaves memory intact.
-    handle = StreamedAnswer(summary=summary)
+    handle = StreamedAnswer(summary=summary, trace=trace)
+
+    log_event(
+        _logger,
+        "turn.start",
+        query_chars=len(query),
+        has_summary=bool(summary),
+        streaming=True,
+    )
 
     documents, rejection = _retrieve_context(query, filters, summary)
     if rejection:
@@ -233,10 +275,17 @@ def ask_stream(
         # already final, so hand it over now. `tokens` stays the empty iterator, and
         # the UI's "consume then check" flow works without a special case.
         handle.response = rejection
+
+        log_event(_logger, "turn.end", outcome="rejected", reason=rejection.reason)
+
+        # This path never enters the generator, so it must close the turn itself. Leaving it
+        # open would let the NEXT turn's events append to this turn's trace - the exact leak
+        # that made threading.local() the wrong tool.
+        end_turn(trace_token)
         return handle
 
     sources, chunks = GenerationService.stream_answer(query, documents, summary)
-    handle.tokens = _stream_tokens(handle, chunks, sources, query, summary)
+    handle.tokens = _stream_tokens(handle, chunks, sources, query, summary, trace_token)
 
     return handle
 
@@ -278,6 +327,7 @@ def _stream_tokens(
     sources: list[CitedSource],
     query: str,
     previous_summary: str | None,
+    trace_token=None,
 ) -> Iterator[str]:
     """Buffer the model's chunks, sanitize each flush, and assemble the final
     response once the stream ends.
@@ -358,3 +408,21 @@ def _stream_tokens(
     # carry the refusal forward into every later prompt.
     if handle.response.success:
         _refresh_summary(handle, previous_summary, query, handle.response.answer)
+
+    usage = handle.response.token_usage or {}
+
+    log_event(
+        _logger,
+        "turn.end",
+        outcome="answered" if handle.response.success else "rejected",
+        reason=handle.response.reason,
+        input_tokens=usage.get("input_tokens"),
+        output_tokens=usage.get("output_tokens"),
+        generation_ms=round(handle.response.latency / 1_000_000) if handle.response.latency else None,
+        answer_chars=len(handle.response.answer or ""),
+    )
+
+    # Close the turn AFTER summarization, so summary events are inside this trace and not
+    # leaking into the next one.
+    if trace_token is not None:
+        end_turn(trace_token)
