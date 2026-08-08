@@ -1,4 +1,3 @@
-from pathlib import Path
 from data.src.storage.embeddings import EmbeddingService
 from data.src.storage.vector_store import VectorStore
 
@@ -8,9 +7,10 @@ from data.src.storage.bm25indexing import BM25Indexer
 vector_store = VectorStore()
 sparse_index = BM25Indexer()
 
-DENSE_INDEX_PATH = Path("./storage/my_index.index")
-SPARSE_INDEX_PATH = Path("./storage/my_sparseindex.index")
-DOCUMENTS_PATH = Path("./storage/documents.pkl")
+# PR-14a: three path constants were declared here and referenced by nothing. One of them,
+# SPARSE_INDEX_PATH, pointed at "my_sparseindex.index" - a filename that has never existed;
+# the real sparse index is storage/bm25.index. Dead AND wrong, which is what duplicated
+# configuration decays into. Paths now live in config.py, derived from one STORAGE_DIR.
 
 class IndexerService:
 

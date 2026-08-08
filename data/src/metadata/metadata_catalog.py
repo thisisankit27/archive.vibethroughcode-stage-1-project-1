@@ -1,8 +1,7 @@
 import json
-from pathlib import Path
 from langchain_core.documents import Document
 
-CATALOG_PATH = Path("./storage/metadata_catalog.json")
+from data.src.config import CATALOG_PATH
 
 class MetadataCatalog:
     _catalog = []

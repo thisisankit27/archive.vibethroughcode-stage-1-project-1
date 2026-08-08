@@ -3,14 +3,19 @@ import time
 from langchain_core.documents import Document
 from langchain_ollama import OllamaEmbeddings
 
+from data.src.config import EMBEDDING_BATCH_SIZE, EMBEDDING_MODEL, OLLAMA_BASE_URL
+
 
 class EmbeddingService:
 
     _model = OllamaEmbeddings(
-        model="embeddinggemma:latest"
+        model=EMBEDDING_MODEL,
+        base_url=OLLAMA_BASE_URL,
     )
 
-    _BATCH_SIZE = 100
+    # Changing the embedding model invalidates the whole index - stored vectors and query
+    # vectors must come from the same model, or similarity search compares noise.
+    _BATCH_SIZE = EMBEDDING_BATCH_SIZE
 
     @classmethod
     def generate_embeddings(

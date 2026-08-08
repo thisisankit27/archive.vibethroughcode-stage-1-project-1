@@ -28,30 +28,15 @@ from data.src.guardrails.output_guardrails import (
 )
 from data.src.summarization_service import SummarizationService
 
-TOP_K = 3
-
-# --- Streaming buffer configuration ------------------------------------------------
-# Both are tuning knobs rather than behaviour, so both are PR-14a candidates.
-
-# How many content chunks to accumulate before considering a flush to the UI.
-# A FLOOR, not a target - the boundary rule below can still hold a flush back.
-#   1        -> best time-to-first-token, but a guardrail pass per token and a
-#               citation marker split on almost every answer
-#   ~20      -> markers usually intact, buffering imperceptible to the reader
-#   ~200     -> good policy window, but TTFT approaches not streaming at all
-#   no limit -> you have reinvented .invoke()
-FLUSH_FLOOR = 20
-
-# The longest an unmatched "[" may be held before we decide it is not a citation.
+# PR-14a: these moved to config.py. Re-exported here so every call site in this module
+# keeps reading like a local constant.
 #
-# This bound comes from the grammar, not from taste: a valid marker is
-# "[" + digits + "]", so with TOP_K = 3 the longest possible marker is "[3]" - three
-# characters. Eight leaves room for a two-digit TOP_K plus slack.
-#
-# Past that, the bracket is ordinary text (documents contain "[note]", code samples,
-# footnote syntax), and continuing to wait for a "]" that will never arrive would
-# stall the stream indefinitely.
-MARKER_MAX = 8
+#   TOP_K        retrieval breadth
+#   FLUSH_FLOOR  how many chunks accumulate before a flush is considered (a UX floor)
+#   MARKER_MAX   how long an unmatched "[" may be held before it is ruled out as a
+#                citation. NOT independently settable - it is derived from TOP_K, because
+#                the longest valid marker is "[" + str(TOP_K) + "]". See config.py.
+from data.src.config import FLUSH_FLOOR, MARKER_MAX, TOP_K
 
 
 @dataclass
