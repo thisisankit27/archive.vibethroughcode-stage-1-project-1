@@ -11,6 +11,7 @@ from data.src.config import GENERATION_MODEL, OLLAMA_BASE_URL
 from data.src.models.CitedSource import CitedSource
 from data.src.models.GenerationResponse import GenerationResponse
 from data.src.prompts import HUMAN_PROMPT, SYSTEM_PROMPT
+from data.src.resilience import call_with_retry, retryable_stream
 
 
 def _label_sources(retrieved_documents: list[Document]) -> list[CitedSource]:
@@ -65,11 +66,17 @@ class GenerationService:
 
         sources = _label_sources(retrieved_documents)
 
-        llm_response = cls._chain.invoke({
-            "sources": sources,
-            "user_query": user_query,
-            "history": history or "",
-        })
+        # Safe to retry: generation has no side effects, so a repeated attempt costs latency
+        # and nothing else.
+        llm_response = call_with_retry(
+            "generation.invoke",
+            "ollama",
+            lambda: cls._chain.invoke({
+                "sources": sources,
+                "user_query": user_query,
+                "history": history or "",
+            }),
+        )
 
         return cls.build_response(llm_response, sources)
 
@@ -100,13 +107,21 @@ class GenerationService:
 
         sources = _label_sources(retrieved_documents)
 
-        chunks = cls._chain.stream({
-            "sources": sources,
-            "user_query": user_query,
-            # Empty string, not None - an empty <history> block renders harmlessly, while
-            # None would put the literal word "None" in front of the model.
-            "history": history or "",
-        })
+        # Retried ONLY until the first chunk arrives. After a token has been handed out it has
+        # been painted on somebody's screen, and restarting the stream would replay it - the
+        # user would watch the answer begin twice. The common failure (Ollama down) fails on
+        # the first chunk anyway, which is exactly where retrying is both safe and useful.
+        chunks = retryable_stream(
+            "generation.stream",
+            "ollama",
+            lambda: cls._chain.stream({
+                "sources": sources,
+                "user_query": user_query,
+                # Empty string, not None - an empty <history> block renders harmlessly, while
+                # None would put the literal word "None" in front of the model.
+                "history": history or "",
+            }),
+        )
 
         return sources, chunks
 

@@ -7,6 +7,7 @@ from data.src.metadata.metadata_catalog import MetadataCatalog
 from data.src.models.GenerationResponse import GenerationResponse
 from data.src.observability import configure_logging
 from data.src.rag import ask_stream
+from data.src.resilience import DependencyError
 
 # Idempotent by design - Streamlit re-executes this script on every interaction, so a naive
 # setup would attach a second file handler, then a third: duplicated lines and leaked file
@@ -225,6 +226,22 @@ def render_reply_details(response: GenerationResponse, trace: list | None = None
     # The trace renders even for a rejected turn - a refusal is exactly when you want to see
     # which guardrail fired and why.
     if not response.success:
+
+        # DEGRADED, not merely failed (PR-15). Retrieval runs against local FAISS and BM25
+        # files, so when the LLM is unreachable we still know which passages matched. Showing
+        # them is a real, reduced product rather than a consolation error page - the retrieval
+        # half of RAG still works when the generation half does not.
+        if response.sources:
+            st.caption(
+                f"Showing the {len(response.sources)} most relevant passages found for your "
+                "question. These are the documents themselves, not a generated answer."
+            )
+
+            for source in response.sources:
+                with st.container(border=True):
+                    st.caption(f"**{source.display_name}**")
+                    st.write(source.document.page_content)
+
         with st.expander("ℹ️ Details"):
             render_trace(trace)
         return
@@ -432,13 +449,29 @@ if st.button("Build Knowledge Base"):
 
     if st.session_state.last_upload_signature != upload_signature:
 
-        (
-            chunks,
-            dimension,
-            elapsed,
-            knowledge_base_size,
-            sparse_stats,
-        ) = ingest_documents(files)
+        # FAIL FAST here, unlike the question path. There is no degraded ingestion: a
+        # partially embedded document would sit in the index looking complete, and every
+        # later answer would be silently missing the chunks that never made it. A partial
+        # result that MISLEADS is worse than an honest failure.
+        #
+        # The spinner is not decoration - embedding hundreds of chunks takes real time, and
+        # a page that looks frozen is indistinguishable from one that has crashed.
+        try:
+            with st.spinner("Embedding and indexing documents…"):
+                (
+                    chunks,
+                    dimension,
+                    elapsed,
+                    knowledge_base_size,
+                    sparse_stats,
+                ) = ingest_documents(files)
+        except DependencyError as error:
+            st.error(f"**Could not build the knowledge base.** {error.message}")
+            st.caption(
+                "Nothing was indexed, so your existing knowledge base is unchanged. "
+                "Fix the issue above and press the button again."
+            )
+            st.stop()
 
         st.session_state.knowledge_base = {
             "chunks": chunks,

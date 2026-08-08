@@ -4,6 +4,7 @@ from langchain_core.documents import Document
 from langchain_ollama import OllamaEmbeddings
 
 from data.src.config import EMBEDDING_BATCH_SIZE, EMBEDDING_MODEL, OLLAMA_BASE_URL
+from data.src.resilience import call_with_retry
 
 
 class EmbeddingService:
@@ -36,8 +37,18 @@ class EmbeddingService:
 
             batch = texts[i:i + cls._BATCH_SIZE]
 
+            # Retried per BATCH, not per document set. Embedding a batch is side-effect free -
+            # nothing is written until VectorStore.store() runs later - so a repeat is safe.
+            #
+            # Contrast VectorStore.store() itself, which is NOT wrapped: it does index.add()
+            # then documents.extend() then save(), so retrying it after a failed save would
+            # put every chunk in the index twice.
             vectors.extend(
-                cls._model.embed_documents(batch)
+                call_with_retry(
+                    "embedding.embed_documents",
+                    "ollama",
+                    lambda batch=batch: cls._model.embed_documents(batch),
+                )
             )
 
         elapsed = time.perf_counter() - start
@@ -52,4 +63,8 @@ class EmbeddingService:
         query: str,
     ) -> list[float]:
 
-        return cls._model.embed_query(query)
+        return call_with_retry(
+            "embedding.embed_query",
+            "ollama",
+            lambda: cls._model.embed_query(query),
+        )

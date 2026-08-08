@@ -27,6 +27,7 @@ from data.src.guardrails.output_guardrails import (
     validate_summary,
 )
 from data.src.observability import end_turn, get_logger, log_event, stage, start_turn
+from data.src.resilience import DependencyError
 from data.src.summarization_service import SummarizationService
 
 _logger = get_logger("rag")
@@ -230,7 +231,10 @@ def ask(query: str, filters: dict, summary: str | None = None) -> GenerationResp
     if rejection:
         return rejection
 
-    generation_response = GenerationService.generate_answer(query, documents, summary)
+    try:
+        generation_response = GenerationService.generate_answer(query, documents, summary)
+    except DependencyError as error:
+        return _degraded_response(error, None)
 
     rejection = validate_output(generation_response)
     if rejection:
@@ -284,10 +288,38 @@ def ask_stream(
         end_turn(trace_token)
         return handle
 
+    # stream_answer only BUILDS the lazy iterator, so a dead Ollama does not raise here - it
+    # raises on the first next(), inside _stream_tokens, which is where it is handled.
     sources, chunks = GenerationService.stream_answer(query, documents, summary)
     handle.tokens = _stream_tokens(handle, chunks, sources, query, summary, trace_token)
 
     return handle
+
+
+def _degraded_response(
+    error: DependencyError,
+    sources: list[CitedSource] | None,
+) -> GenerationResponse:
+    """The LLM is unreachable but retrieval already succeeded.
+
+    This is the PR-15 decision that matters, and it is not "show an error". Retrieval is local
+    - FAISS and BM25 are files on disk - so when Ollama dies we still know the three passages
+    most relevant to the question. The retrieval half of RAG keeps working when the generation
+    half does not.
+
+    So the response carries `sources`, and the UI renders them as passages the user can read
+    themselves. Degraded, honest, and genuinely useful - not a consolation error page.
+
+    Note the rule this follows: degrade when a partial result is still useful AND honest. There
+    is no partial ANSWER to offer, so we do not invent one; there are real passages, so we
+    offer those and say plainly where they came from.
+    """
+    return GenerationResponse(
+        success=False,
+        reason=error.reason,
+        message=error.message,
+        sources=sources,
+    )
 
 
 def _refresh_summary(
@@ -308,7 +340,21 @@ def _refresh_summary(
     else in the guardrails.
     """
 
-    candidate, usage = SummarizationService.summarize(previous_summary, query, answer)
+    # DEGRADE, never fail. The user already has their answer; a summarization outage must not
+    # retroactively turn a successful turn into an error. Memory simply stops advancing - the
+    # same consequence PR-13 chose when a summary fails validation, now reached by a second
+    # route. One outcome, one behaviour.
+    try:
+        candidate, usage = SummarizationService.summarize(previous_summary, query, answer)
+    except DependencyError as error:
+        log_event(
+            _logger,
+            "summary.skipped",
+            reason=error.reason,
+            attempts=error.attempts,
+        )
+        return
+
     handle.summary_token_usage = usage
 
     candidate = sanitize_summary(candidate)
@@ -340,47 +386,79 @@ def _stream_tokens(
     pending = ""            # received, not yet safe or large enough to flush
     accumulated = None      # merged message - carries the metadata at the end
     held = 0                # content chunks since the last flush
+    emitted = False         # has any text reached the user yet?
 
-    for chunk in chunks:
-        # LangChain accumulates a streamed message by ADDING chunks together. The
-        # merged object is what finally carries response_metadata and usage_metadata,
-        # which arrive only on the last chunk - so token counts, finish reason and
-        # latency are simply not knowable until the stream is over.
-        accumulated = chunk if accumulated is None else accumulated + chunk
+    # PR-15. `.stream()` is LAZY, so the connection to Ollama is not made when ask_stream()
+    # returns - it happens on the first next() of this loop, which Streamlit performs from
+    # inside st.write_stream. Without this try, a dead Ollama surfaces as a traceback rendered
+    # underneath the user's own question bubble.
+    #
+    # The generator must not raise. Its caller is a UI rendering function, and a UI cannot do
+    # anything sensible with an httpx exception.
+    try:
+        for chunk in chunks:
+            # LangChain accumulates a streamed message by ADDING chunks together. The
+            # merged object is what finally carries response_metadata and usage_metadata,
+            # which arrive only on the last chunk - so token counts, finish reason and
+            # latency are simply not knowable until the stream is over.
+            accumulated = chunk if accumulated is None else accumulated + chunk
 
-        # Some chunks carry only metadata and no text.
-        if not chunk.content:
-            continue
+            # Some chunks carry only metadata and no text.
+            if not chunk.content:
+                continue
 
-        pending += chunk.content
-        held += 1
+            pending += chunk.content
+            held += 1
 
-        # FLOOR: not enough text yet to be worth a render pass.
-        if held < FLUSH_FLOOR:
-            continue
+            # FLOOR: not enough text yet to be worth a render pass.
+            if held < FLUSH_FLOOR:
+                continue
 
-        # BOUNDARY: how much of what we hold is safe to release.
-        safe = _safe_flush_point(pending)
+            # BOUNDARY: how much of what we hold is safe to release.
+            safe = _safe_flush_point(pending)
 
-        # A marker is in flight at the very start of the buffer, so there is no safe
-        # prefix at all. Wait for more tokens rather than splitting it. MARKER_MAX
-        # guarantees this cannot loop forever.
-        if safe == 0:
-            continue
+            # A marker is in flight at the very start of the buffer, so there is no safe
+            # prefix at all. Wait for more tokens rather than splitting it. MARKER_MAX
+            # guarantees this cannot loop forever.
+            if safe == 0:
+                continue
 
-        # Sanitize every flush. This is only CORRECT because _safe_flush_point
-        # guarantees the slice contains no partial marker - the two decisions are
-        # coupled, and weakening the boundary rule silently reintroduces the leak.
-        yield strip_unverified_citations(pending[:safe], sources)
+            # Sanitize every flush. This is only CORRECT because _safe_flush_point
+            # guarantees the slice contains no partial marker - the two decisions are
+            # coupled, and weakening the boundary rule silently reintroduces the leak.
+            yield strip_unverified_citations(pending[:safe], sources)
+            emitted = True
 
-        pending = pending[safe:]
-        held = 0
+            pending = pending[safe:]
+            held = 0
 
-    # END OF STREAM: flush unconditionally, whatever the predicate says. A "[" still
-    # unmatched at this point is literal text - no tokens remain that could close it.
-    # Skipping this would silently swallow the tail of the answer.
-    if pending:
-        yield strip_unverified_citations(pending, sources)
+        # END OF STREAM: flush unconditionally, whatever the predicate says. A "[" still
+        # unmatched at this point is literal text - no tokens remain that could close it.
+        # Skipping this would silently swallow the tail of the answer.
+        if pending:
+            yield strip_unverified_citations(pending, sources)
+            emitted = True
+
+    except DependencyError as error:
+        # Retrieval SUCCEEDED - FAISS and BM25 are local files - so `sources` holds the
+        # passages this question actually matched. Hand them over instead of an error page.
+        handle.response = _degraded_response(error, sources)
+
+        log_event(
+            _logger,
+            "turn.end",
+            outcome="degraded",
+            reason=error.reason,
+            attempts=error.attempts,
+            partial_output=emitted,
+            sources_offered=len(sources),
+        )
+
+        # No summarization: there is no answer to fold into memory. Memory is untouched, so
+        # the next question still has whatever context the conversation had before.
+        if trace_token is not None:
+            end_turn(trace_token)
+        return
 
     # Only now does a whole answer exist, so only now can whole-answer work run.
     response = GenerationService.build_response(accumulated, sources)
