@@ -2,6 +2,9 @@ import re
 from data.src.guardrails.text_policy import contains_injection_attempt
 from data.src.models.GenerationResponse import GenerationResponse
 from data.src.models.CitedSource import CitedSource
+from data.src.observability import get_logger, log_event
+
+_logger = get_logger("guardrails.output")
 
 # Matches a citation marker such as [1] or [12], plus any spaces/tabs before it,
 # so removing a marker does not leave a dangling space ("... k=60 ." )
@@ -16,6 +19,8 @@ def validate_output(generation_response: GenerationResponse) -> GenerationRespon
     # Sanitizer, not a validator: repairs the answer in place, never rejects it.
     _strip_unverified_citations(generation_response)
 
+    _observe_citation_presence(generation_response)
+
     response = _validate_relevance(generation_response.answer, generation_response.sources)
     if response:
         return response
@@ -26,8 +31,34 @@ def validate_output(generation_response: GenerationResponse) -> GenerationRespon
 
     return None
 
+def _observe_citation_presence(response: GenerationResponse) -> None:
+    """Neither a validator nor a sanitizer - a third contract: an OBSERVER.
+
+    It changes nothing and rejects nothing. It exists because "the answer carries no citation
+    markers at all" is the visible symptom of the model ignoring Rule 6 and answering from
+    <history> instead of <context> - a fluent, confident, unattributable answer that looks
+    completely fine on screen.
+
+    That cannot be a rejection: an uncited answer may still be correct, and enforcing citation
+    PRESENCE would mean discarding valid answers (recorded in PR-11's failure modes). So the
+    only honest response is to make it countable. If this fires on most turns, Rule 6 is not
+    working and the fix is the prompt, not the code.
+    """
+    if not response.answer or not response.sources:
+        return
+
+    if not _CITATION_PATTERN.search(response.answer):
+        log_event(
+            _logger,
+            "citations.absent",
+            sources_offered=len(response.sources),
+            answer_chars=len(response.answer),
+        )
+
+
 def _check_empty_response(response: GenerationResponse) -> GenerationResponse | None:
     if not response.answer or not response.answer.strip():
+        log_event(_logger, "guardrail.rejected", reason="EMPTY_RESPONSE")
         response.success = False
         response.reason="EMPTY_RESPONSE"
         response.message="The language model did not generate a valid response."
@@ -62,11 +93,35 @@ def strip_unverified_citations(text: str | None, sources: list[CitedSource] | No
         for source in (sources or [])
     }
 
+    invented: list[str] = []
+
     def _keep_verified(match: re.Match) -> str:
         cited_label = match.group(1)
-        return match.group(0) if cited_label in valid_labels else ""
 
-    return _CITATION_PATTERN.sub(_keep_verified, text)
+        if cited_label in valid_labels:
+            return match.group(0)
+
+        invented.append(cited_label)
+        return ""
+
+    cleaned = _CITATION_PATTERN.sub(_keep_verified, text)
+
+    # BLIND SPOT CLOSED (PR-14b). This sanitizer has been silently repairing invented markers
+    # since PR-11c, and nobody could tell how often the model invents them. A sanitizer that
+    # repairs without reporting is a quality sensor with no readout - the system gets quietly
+    # better while the signal about the model gets thrown away.
+    #
+    # Note what is logged: which LABELS were invented, not the answer they appeared in.
+    if invented:
+        log_event(
+            _logger,
+            "citations.stripped",
+            removed=len(invented),
+            invented=invented,
+            issued=sorted(valid_labels),
+        )
+
+    return cleaned
 
 
 def _strip_unverified_citations(generation_response: GenerationResponse) -> None:
@@ -117,12 +172,20 @@ def validate_summary(summary: str | None) -> bool:
     conversation stops advancing instead of losing what it already knew.
     """
     if not summary or not summary.strip():
+        log_event(_logger, "summary.rejected", reason="EMPTY_SUMMARY")
         return False
 
     # Same rule the input guardrail applies to the user, different consequence.
     if contains_injection_attempt(summary):
+        log_event(
+            _logger,
+            "summary.rejected",
+            reason="INJECTION_IN_SUMMARY",
+            summary_chars=len(summary),
+        )
         return False
 
+    log_event(_logger, "summary.accepted", summary_chars=len(summary))
     return True
 
 
