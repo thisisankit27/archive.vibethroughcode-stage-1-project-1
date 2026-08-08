@@ -17,7 +17,13 @@ class IndexerService:
     @classmethod
     def index(self, chunks):
         embeddings, dimension, elapsed = EmbeddingService.generate_embeddings(chunks)
+
+        # The vectors are CONSUMED here. From this line on, the FAISS index on disk is
+        # the embeddings - in a form built for searching. Returning the raw list as well
+        # was a leftover from PR-4, when the UI showed embedding stats and persistence
+        # did not exist yet. Nothing has read it since PR-5.
         vector_store.store(chunks, embeddings)
+
         knowledge_base_size = vector_store.document_count()
 
         # similarly index and store sparse form of chunks
@@ -26,7 +32,6 @@ class IndexerService:
         # this will help during retrieval
 
         return (
-            embeddings,
             dimension,
             elapsed,
             knowledge_base_size,
