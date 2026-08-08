@@ -21,9 +21,12 @@ from data.src.retriever.retrieval_service import RetrievalService
 from data.src.guardrails.input_guardrails import validate_input
 from data.src.guardrails.context_guardrails import validate_context
 from data.src.guardrails.output_guardrails import (
+    sanitize_summary,
     strip_unverified_citations,
     validate_output,
+    validate_summary,
 )
+from data.src.summarization_service import SummarizationService
 
 TOP_K = 3
 
@@ -73,10 +76,59 @@ class StreamedAnswer:
     tokens: Iterator[str] = field(default_factory=lambda: iter(()))
     response: GenerationResponse | None = None
 
+    # PR-13. The conversation summary AFTER this turn, and what producing it cost.
+    #
+    # These live here rather than on GenerationResponse on purpose. GenerationResponse is
+    # the answer to ONE question; a summary describes the whole conversation, has a
+    # different lifetime, and would be meaningless on the rejection objects the guardrails
+    # return. StreamedAnswer already means "everything this call produced", which is
+    # exactly what these are.
+    #
+    # `summary` is seeded with the INCOMING summary, so every path that does not produce
+    # an accepted new one - a guardrail rejection, a failed summary - leaves the caller's
+    # memory untouched rather than wiping it.
+    summary: str | None = None
+    summary_token_usage: dict | None = None
+
+
+def _build_retrieval_query(summary: str | None, query: str) -> str:
+    """The string retrieval actually searches on.
+
+    THE PROBLEM. "What are his skills?" embeds to nothing useful and BM25 scores it on
+    "what", "are", "his", "skills". The retriever runs BEFORE the prompt is built, so
+    handing history to the model does not help it - by then the wrong chunks are fetched.
+
+    THE FIX. Prepend the conversation summary, so the query carries the subject the user
+    left implicit.
+
+    WHY NOT RETRIEVE TWICE AND FUSE. fusion_service.py already does RRF over multiple
+    result lists, so retrieving once on the question and once on the summary looks
+    tempting. It is wrong here: RRF assumes its inputs are comparably-competent rankings
+    of the same information need. On a follow-up, the question-only arm is KNOWN to be
+    noise - and because RRF scores by reciprocal rank, a junk chunk ranked #1 in the bad
+    arm scores about the same as a good chunk ranked #1 in the good arm. That promotes
+    noise into the top-K at near-equal weight. Fusing is for two good retrievers, not for
+    one good and one broken.
+
+    KNOWN LIMITATION - topic change. The summary is 3 sentences, the question is a
+    handful of words, so the summary dominates both the embedding and the BM25 term
+    counts. That is exactly what a follow-up needs and exactly wrong when the user
+    changes subject: turn 4 asking about RRF, after three turns about a resume, retrieves
+    resume chunks. Accepted for now and clearing the conversation resets it. The fix, when
+    it is worth its magic number, is to embed the question, cosine-compare it against the
+    summary, and drop the summary below a threshold - roughly free, since the question's
+    vector is computed for the dense arm anyway.
+    """
+    if not summary:
+        return query
+
+    return f"{summary}\n{query}"
+
 
 def _retrieve_context(
     query: str,
     filters: dict,
+    summary: str | None = None,
 ) -> tuple[list[Document] | None, GenerationResponse | None]:
     """The three steps ask() and ask_stream() share: guard, retrieve, guard.
 
@@ -90,11 +142,18 @@ def _retrieve_context(
     flow hide the second path from the signature.
     """
 
+    # The RAW question, never the concatenated one. Passing summary+query here would break
+    # the empty-question check and would reject the user for a poisoned summary they did
+    # not write. See the note above validate_input.
     rejection = validate_input(query)
     if rejection:
         return None, rejection
 
-    documents = RetrievalService.retrieve(query, TOP_K, filters)
+    documents = RetrievalService.retrieve(
+        _build_retrieval_query(summary, query),
+        TOP_K,
+        filters,
+    )
 
     rejection = validate_context(query, documents)
     if rejection:
@@ -145,14 +204,19 @@ def _safe_flush_point(pending: str) -> int:
     return open_bracket
 
 
-def ask(query: str, filters: dict) -> GenerationResponse:
-    """Blocking path. Unchanged behaviour; kept as the non-streaming peer."""
+def ask(query: str, filters: dict, summary: str | None = None) -> GenerationResponse:
+    """Blocking path. Kept as the non-streaming peer.
 
-    documents, rejection = _retrieve_context(query, filters)
+    Accepts a summary for parity but does NOT produce one - a caller with no stream to
+    defer behind would pay for summarization synchronously, and this path exists for
+    testing the pipeline without a UI.
+    """
+
+    documents, rejection = _retrieve_context(query, filters, summary)
     if rejection:
         return rejection
 
-    generation_response = GenerationService.generate_answer(query, documents)
+    generation_response = GenerationService.generate_answer(query, documents, summary)
 
     rejection = validate_output(generation_response)
     if rejection:
@@ -161,15 +225,24 @@ def ask(query: str, filters: dict) -> GenerationResponse:
     return generation_response
 
 
-def ask_stream(query: str, filters: dict) -> StreamedAnswer:
+def ask_stream(
+    query: str,
+    filters: dict,
+    summary: str | None = None,
+) -> StreamedAnswer:
     """Streaming path. Returns immediately - no model call has happened yet.
 
     Generation begins when the caller starts consuming `handle.tokens`.
+
+    `summary` is the conversation summary produced by the PREVIOUS turn. It is already in
+    hand when this call starts, which is the whole reason conversation memory costs
+    nothing at time-to-first-token: the expensive part happened last turn.
     """
 
-    handle = StreamedAnswer()
+    # Seeded with the incoming summary so every early-return path leaves memory intact.
+    handle = StreamedAnswer(summary=summary)
 
-    documents, rejection = _retrieve_context(query, filters)
+    documents, rejection = _retrieve_context(query, filters, summary)
     if rejection:
         # Rejected before generation. No tokens will ever arrive and the response is
         # already final, so hand it over now. `tokens` stays the empty iterator, and
@@ -177,16 +250,49 @@ def ask_stream(query: str, filters: dict) -> StreamedAnswer:
         handle.response = rejection
         return handle
 
-    sources, chunks = GenerationService.stream_answer(query, documents)
-    handle.tokens = _stream_tokens(handle, chunks, sources)
+    sources, chunks = GenerationService.stream_answer(query, documents, summary)
+    handle.tokens = _stream_tokens(handle, chunks, sources, query, summary)
 
     return handle
+
+
+def _refresh_summary(
+    handle: StreamedAnswer,
+    previous_summary: str | None,
+    query: str,
+    answer: str,
+) -> None:
+    """The deferred WRITE path: fold this turn into the running summary.
+
+    Runs after the final token has been flushed, so the user is already reading their
+    answer while this executes. It is DEFERRED, not asynchronous - Streamlit is
+    synchronous and single-threaded per session, and a real thread would have no
+    ScriptRunContext. Calling it "background" would be a lie about the mechanism; what is
+    true, and what matters, is that it is off the critical path of every question.
+
+    Sanitize, then validate, then accept - the two contracts kept separate, as everywhere
+    else in the guardrails.
+    """
+
+    candidate, usage = SummarizationService.summarize(previous_summary, query, answer)
+    handle.summary_token_usage = usage
+
+    candidate = sanitize_summary(candidate)
+
+    if validate_summary(candidate):
+        handle.summary = candidate
+    # Otherwise handle.summary keeps the value it was seeded with. Memory stops advancing
+    # rather than disappearing: the conversation keeps what it already knew, and the user
+    # sees nothing go wrong. Clearing it instead would turn one bad summary into sudden
+    # amnesia mid-conversation.
 
 
 def _stream_tokens(
     handle: StreamedAnswer,
     chunks: Iterator[AIMessageChunk],
     sources: list[CitedSource],
+    query: str,
+    previous_summary: str | None,
 ) -> Iterator[str]:
     """Buffer the model's chunks, sanitize each flush, and assemble the final
     response once the stream ends.
@@ -257,3 +363,13 @@ def _stream_tokens(
     rejection = validate_output(response)
 
     handle.response = rejection or response
+
+    # ---- DEFERRED WRITE PATH ----------------------------------------------------------
+    # Everything above this line was on the critical path. Nothing below it is: the last
+    # token has been yielded, so the user has their complete answer on screen.
+    #
+    # Only successful turns are summarized. A guardrail rejection has no answer worth
+    # remembering, and folding "the user asked something we refused" into memory would
+    # carry the refusal forward into every later prompt.
+    if handle.response.success:
+        _refresh_summary(handle, previous_summary, query, handle.response.answer)

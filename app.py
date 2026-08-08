@@ -26,6 +26,14 @@ class ChatTurn:
     question: str
     response: GenerationResponse
 
+    # PR-13. What it cost to fold this turn into the conversation summary.
+    #
+    # Kept OUT of response.token_usage deliberately. That field is the cost of answering
+    # one question; adding a second call's tokens to it would make the per-turn "Prompt
+    # Tokens" metric describe two different calls at once. Two costs, two fields - and
+    # the sidebar reports them as two different things, because they are.
+    summary_token_usage: dict | None = None
+
 # --------------------------------------------------
 # Typewriter rendering
 # --------------------------------------------------
@@ -111,6 +119,15 @@ if "last_upload_signature" not in st.session_state:
 if "conversation" not in st.session_state:
     st.session_state.conversation = []
 
+# PR-13. The running conversation summary - ONE value, not one per turn.
+#
+# It is a single key rather than a field on each ChatTurn because there is exactly one
+# current summary. Storing a copy per turn would make "the current one" mean "whichever is
+# in the last element", i.e. meaning implied by list position - the same fragility
+# rejected in PR-11 when positional citation markers lost to a materialized mapping.
+if "conversation_summary" not in st.session_state:
+    st.session_state.conversation_summary = None
+
 
 def conversation_totals(turns: list[ChatTurn]) -> dict:
     """Accumulated cost across the whole conversation.
@@ -120,9 +137,22 @@ def conversation_totals(turns: list[ChatTurn]) -> dict:
     turn is removed or the history is cleared. Recomputing over a handful of turns is
     free; keeping two sources of truth in sync never is.
     """
-    totals = {"input_tokens": 0, "output_tokens": 0, "latency": 0, "answered": 0}
+    totals = {
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "latency": 0,
+        "answered": 0,
+        # PR-13: reported separately, never folded into the answer totals above. Keeping
+        # memory is a real cost, but it is a cost of maintaining CONTEXT, not the cost of
+        # answering the user's question. Merging them would hide roughly half the spend
+        # inside a number labelled something else.
+        "context_tokens": 0,
+    }
 
     for turn in turns:
+        summary_usage = turn.summary_token_usage or {}
+        totals["context_tokens"] += summary_usage.get("total_tokens") or 0
+
         # Rejected turns never reached the model, so they contribute nothing but are
         # still counted as part of the conversation.
         if not turn.response.success:
@@ -264,11 +294,21 @@ with st.sidebar:
         f"across {totals['answered']} answered turn(s)."
     )
 
-    # Wiping is a single assignment because the turn list is the ONLY place conversation
-    # state lives. Had the totals been stored separately, this button would have needed
-    # to remember to reset them too - and one day it would have forgotten.
+    # A separate line, not added to the totals above. This is what it costs to REMEMBER,
+    # as distinct from what it costs to answer - and seeing the two side by side is the
+    # honest picture of what conversation memory is worth.
+    st.caption(f"🧠 Context upkeep: {totals['context_tokens']} tokens")
+
+    if st.session_state.conversation_summary:
+        with st.expander("🧠 What the assistant remembers"):
+            st.caption(st.session_state.conversation_summary)
+
+    # Both keys reset together. The summary describes the conversation, so keeping it
+    # after clearing the history would leave a phantom memory of turns that no longer
+    # exist - and it would keep steering retrieval toward topics the user just discarded.
     if st.button("🗑️ Clear Conversation", use_container_width=True):
         st.session_state.conversation = []
+        st.session_state.conversation_summary = None
         st.rerun()
 # --------------------------------------------------
 # Main Page
@@ -518,7 +558,11 @@ if question:
 
         # Returns immediately. No model call has happened yet - generation starts when
         # write_stream begins pulling from the token iterator.
-        stream = ask_stream(question, filters)
+        #
+        # The summary passed in was produced at the END of the previous turn, so it is
+        # already sitting in memory. Conversation memory therefore costs nothing at
+        # time-to-first-token - the work was done a turn ago, off the critical path.
+        stream = ask_stream(question, filters, st.session_state.conversation_summary)
 
         # A pre-generation rejection (empty question, prompt injection, no context) has
         # already populated `response` and will yield no tokens. Checking here keeps an
@@ -543,8 +587,17 @@ if question:
 
     # PROMOTION: transient -> session. Appending AFTER rendering is what prevents a
     # double render - the replay loop above already ran this pass with the old history.
+    # Replace the one current summary. On any path that did not produce an accepted new
+    # one - a guardrail rejection, a summary that failed validation - rag.py hands back
+    # the value we passed in, so this assignment is a harmless no-op rather than a wipe.
+    st.session_state.conversation_summary = stream.summary
+
     st.session_state.conversation.append(
-        ChatTurn(question=question, response=response)
+        ChatTurn(
+            question=question,
+            response=response,
+            summary_token_usage=stream.summary_token_usage,
+        )
     )
 
     # Then immediately re-run, and this is the important part.
