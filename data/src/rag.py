@@ -113,8 +113,9 @@ def _build_retrieval_query(summary: str | None, query: str) -> str:
     KNOWN LIMITATION - topic change. The summary is 3 sentences, the question is a
     handful of words, so the summary dominates both the embedding and the BM25 term
     counts. That is exactly what a follow-up needs and exactly wrong when the user
-    changes subject: turn 4 asking about RRF, after three turns about a resume, retrieves
-    resume chunks. Accepted for now and clearing the conversation resets it. The fix, when
+    changes subject: turn 4 asking about RRF, after three turns about chunking strategy,
+    retrieves chunking passages. Accepted for now, and clearing the conversation resets it.
+    The fix, when
     it is worth its magic number, is to embed the question, cosine-compare it against the
     summary, and drop the summary below a threshold - roughly free, since the question's
     vector is computed for the dense arm anyway.
