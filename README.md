@@ -232,6 +232,22 @@ The full plan and rationale is in [`PR-Journey.md`](PR-Journey.md).
 | **3** | PR-10 → PR-11a | LCEL composition, citations, deterministic verification, prompt ownership |
 | **4** | PR-12a → PR-16 | Streaming, state, memory, configuration, observability, reliability, docs |
 
+A per-PR summary is in [`CHANGELOG.md`](CHANGELOG.md).
+
+---
+
+## Project documents
+
+| | |
+| --- | --- |
+| [`PR-Journey.md`](PR-Journey.md) | The full plan — every PR, its concept, and the problem it solves |
+| [`docs/engineering-mindset/`](docs/engineering-mindset/) | Design decisions, rejected alternatives, and mistakes made |
+| [`CHANGELOG.md`](CHANGELOG.md) | What changed, PR by PR |
+| [`CONTRIBUTING.md`](CONTRIBUTING.md) | How to use this repo — and why arguing with a decision beats a patch |
+| [`SECURITY.md`](SECURITY.md) | Threat model for a local-first app, and what is known-and-accepted |
+| [`CODE_OF_CONDUCT.md`](CODE_OF_CONDUCT.md) | Contributor Covenant 2.1 |
+| [`LICENSE`](LICENSE) | MIT |
+
 ---
 
 *Built in public. Every decision recorded — including the ones that turned out to be wrong.*
