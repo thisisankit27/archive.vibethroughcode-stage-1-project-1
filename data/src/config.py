@@ -9,6 +9,8 @@ storage onto a mounted volume, tuning retrieval, pointing at a remote Ollama.
     SUMMARIZATION_MODEL     llama3.2:latest
     EMBEDDING_MODEL         embeddinggemma:latest
     EMBEDDING_BATCH_SIZE    100
+    LLM_MAX_ATTEMPTS        3
+    LLM_BACKOFF_BASE_SECONDS 0.5
     TOP_K                   3
     RRF_K                   60
     CHUNK_SIZE              600
@@ -77,6 +79,14 @@ SUMMARIZATION_MODEL = _env_str("SUMMARIZATION_MODEL", "llama3.2:latest")
 
 EMBEDDING_MODEL = _env_str("EMBEDDING_MODEL", "embeddinggemma:latest")
 EMBEDDING_BATCH_SIZE = _env_int("EMBEDDING_BATCH_SIZE", 100)
+
+# Total attempts, not retries - 3 means one try plus two more. Only ever applied to TRANSIENT
+# failures of SIDE-EFFECT-FREE calls; see resilience.py.
+LLM_MAX_ATTEMPTS = _env_int("LLM_MAX_ATTEMPTS", 3)
+
+# Backoff ceiling doubles each attempt and the actual wait is a random point below it, so
+# worst case here is 0.5 + 1.0 = 1.5s of waiting before giving up.
+LLM_BACKOFF_BASE_SECONDS = float(_env_str("LLM_BACKOFF_BASE_SECONDS", "0.5"))
 
 
 # --------------------------------------------------

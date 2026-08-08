@@ -28,6 +28,7 @@ from langchain_ollama import ChatOllama
 from data.src.config import OLLAMA_BASE_URL, SUMMARIZATION_MODEL
 from data.src.observability import get_logger, log_event, stage
 from data.src.prompts import SUMMARY_HUMAN_PROMPT, SUMMARY_SYSTEM_PROMPT
+from data.src.resilience import call_with_retry
 
 _logger = get_logger("summarization")
 
@@ -70,14 +71,18 @@ class SummarizationService:
         # Timed even though it is off the critical path - if this ever grows to seconds it
         # would still be felt as the page staying busy after the answer finished.
         with stage(_logger, "summarization", had_previous=bool(previous_summary)):
-            message = cls._chain.invoke({
+            message = call_with_retry(
+                "summarization.invoke",
+                "ollama",
+                lambda: cls._chain.invoke({
                 # An empty string rather than None: the prompt template renders it into the
                 # <previous_summary> block either way, and "None" would be a literal word the
                 # model reads as content.
-                "previous_summary": previous_summary or "",
-                "user_query": user_query,
-                "answer": answer,
-            })
+                    "previous_summary": previous_summary or "",
+                    "user_query": user_query,
+                    "answer": answer,
+                }),
+            )
 
         usage = message.usage_metadata or {}
 
