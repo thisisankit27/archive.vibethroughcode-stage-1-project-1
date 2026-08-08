@@ -25,13 +25,17 @@ token. Work moved from read time to write time - the same trade a materialized v
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_ollama import ChatOllama
 
+from data.src.config import OLLAMA_BASE_URL, SUMMARIZATION_MODEL
 from data.src.prompts import SUMMARY_HUMAN_PROMPT, SUMMARY_SYSTEM_PROMPT
 
 
 class SummarizationService:
 
+    # A separate setting from GENERATION_MODEL even though both default to the same value.
+    # Summarizing is a cheaper job than answering, so these should be free to diverge.
     _llm = ChatOllama(
-        model="llama3.2:latest"
+        model=SUMMARIZATION_MODEL,
+        base_url=OLLAMA_BASE_URL,
     )
 
     _prompt = ChatPromptTemplate.from_messages([

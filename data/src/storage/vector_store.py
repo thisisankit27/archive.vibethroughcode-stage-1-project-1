@@ -1,13 +1,12 @@
 import pickle
-from pathlib import Path
 
 import faiss
 import numpy as np
 from langchain_core.documents import Document
 
 
-INDEX_PATH = Path("./storage/my_index.index")
-DOCUMENTS_PATH = Path("./storage/documents.pkl")
+from data.src.config import DENSE_INDEX_PATH as INDEX_PATH
+from data.src.config import DOCUMENTS_PATH
 
 
 class VectorStore:

@@ -7,6 +7,7 @@ from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.runnables import RunnableLambda, RunnableParallel
 from langchain_ollama import ChatOllama
 
+from data.src.config import GENERATION_MODEL, OLLAMA_BASE_URL
 from data.src.models.CitedSource import CitedSource
 from data.src.models.GenerationResponse import GenerationResponse
 from data.src.prompts import HUMAN_PROMPT, SYSTEM_PROMPT
@@ -30,7 +31,8 @@ def _render_sources(sources: list[CitedSource]) -> str:
 
 class GenerationService:
     _llm = ChatOllama(
-        model="llama3.2:latest"
+        model=GENERATION_MODEL,
+        base_url=OLLAMA_BASE_URL,
     )
 
     _prompt = ChatPromptTemplate.from_messages([
