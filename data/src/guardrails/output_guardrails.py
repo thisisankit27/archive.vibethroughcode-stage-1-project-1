@@ -1,4 +1,5 @@
 import re
+from data.src.guardrails.text_policy import contains_injection_attempt
 from data.src.models.GenerationResponse import GenerationResponse
 from data.src.models.CitedSource import CitedSource
 
@@ -78,6 +79,52 @@ def _strip_unverified_citations(generation_response: GenerationResponse) -> None
         generation_response.answer,
         generation_response.sources,
     )
+
+# --------------------------------------------------
+# Conversation summary (PR-13)
+# --------------------------------------------------
+# The summary is model OUTPUT, which is why it is governed here rather than in
+# input_guardrails. It is also the only piece of model output that OUTLIVES its request -
+# it is injected into every later prompt - so it is the one thing worth checking twice.
+#
+# Kept as two functions with the two contracts this module already distinguishes:
+#   sanitize_summary  repairs, always returns text
+#   validate_summary  judges, returns a verdict
+# rag.py sequences them: sanitize, then validate, then accept or keep the previous one.
+
+
+def sanitize_summary(summary: str | None) -> str | None:
+    """Strip citation markers from a summary.
+
+    Citation labels are REQUEST-scoped by design (PR-11b): [1] means whatever chunk was
+    labelled 1 for one prompt. A summary outlives its request, so a marker that leaked
+    into it would mean a different document on the next turn - silently wrong attribution,
+    which is exactly the failure mode CitedSource's materialized mapping exists to prevent.
+
+    Reuses _CITATION_PATTERN with no valid labels, i.e. remove every marker.
+    """
+    if not summary:
+        return summary
+
+    return _CITATION_PATTERN.sub("", summary)
+
+
+def validate_summary(summary: str | None) -> bool:
+    """Is this summary fit to inject into the next prompt?
+
+    A verdict, not a repair - and note the consequence is the caller's to choose. rag.py
+    responds to False by keeping the PREVIOUS summary rather than clearing memory: the
+    conversation stops advancing instead of losing what it already knew.
+    """
+    if not summary or not summary.strip():
+        return False
+
+    # Same rule the input guardrail applies to the user, different consequence.
+    if contains_injection_attempt(summary):
+        return False
+
+    return True
+
 
 def _validate_relevance(response: str, sources: list[CitedSource]) -> GenerationResponse | None:
     #Helper LLM (future)

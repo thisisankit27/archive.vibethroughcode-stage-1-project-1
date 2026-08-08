@@ -42,13 +42,23 @@ class GenerationService:
         RunnableParallel(
             context=itemgetter("sources") | RunnableLambda(_render_sources),
             user_query=itemgetter("user_query"),
+            # PR-13: a third branch, plucked through unchanged. RunnableParallel is a
+            # declarative fan-out of one input into a named structure, so carrying an
+            # extra value to the prompt costs exactly one line - which is the payoff for
+            # having chosen it over RunnablePassthrough.assign in PR-10.
+            history=itemgetter("history"),
         )
         | _prompt
         | _llm
     )
 
     @classmethod
-    def generate_answer(cls, user_query, retrieved_documents) -> GenerationResponse:
+    def generate_answer(
+        cls,
+        user_query,
+        retrieved_documents,
+        history: str | None = None,
+    ) -> GenerationResponse:
         """Blocking generation. Returns only when the whole answer exists."""
 
         sources = _label_sources(retrieved_documents)
@@ -56,6 +66,7 @@ class GenerationService:
         llm_response = cls._chain.invoke({
             "sources": sources,
             "user_query": user_query,
+            "history": history or "",
         })
 
         return cls.build_response(llm_response, sources)
@@ -65,6 +76,7 @@ class GenerationService:
         cls,
         user_query,
         retrieved_documents,
+        history: str | None = None,
     ) -> tuple[list[CitedSource], Iterator[AIMessageChunk]]:
         """Incremental generation. Returns immediately; nothing runs until the
         iterator is consumed.
@@ -89,6 +101,9 @@ class GenerationService:
         chunks = cls._chain.stream({
             "sources": sources,
             "user_query": user_query,
+            # Empty string, not None - an empty <history> block renders harmlessly, while
+            # None would put the literal word "None" in front of the model.
+            "history": history or "",
         })
 
         return sources, chunks
