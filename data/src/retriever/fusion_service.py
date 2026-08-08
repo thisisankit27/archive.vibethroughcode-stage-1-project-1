@@ -1,8 +1,10 @@
 from langchain_core.documents import Document
 
+from data.src.config import RRF_K as _RRF_K
+
 
 class Fuser:
-    RRF_K = 60
+    RRF_K = _RRF_K
 
     @classmethod
     def fuse(cls, dense_docs: list[Document], sparse_docs: list[Document]) -> list[Document]:

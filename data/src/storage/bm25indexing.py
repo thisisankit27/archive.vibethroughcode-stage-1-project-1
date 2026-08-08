@@ -1,12 +1,11 @@
 import pickle
-from pathlib import Path
 
 from langchain_core.documents import Document
 from rank_bm25 import BM25Okapi
 
 from data.src.storage.sparse_indexing import SparseIndexer
 
-INDEX_PATH = Path("./storage/bm25.index")
+from data.src.config import SPARSE_INDEX_PATH as INDEX_PATH
 
 
 class BM25Indexer(SparseIndexer):
