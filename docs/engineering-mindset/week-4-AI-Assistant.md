@@ -900,8 +900,8 @@ PR-12 made the *application* remember. **The pipeline still did not.** `ask_stre
 every question as though it were the first one ever asked.
 
 ```
-You: Tell me about Ayanabha
-Bot: Ayanabha Misra is a Front-end Developer… [2][3]
+You: Tell me about Reciprocal Rank Fusion
+Bot: RRF merges ranked lists by summing 1/(k + rank) for each document… [2][3]
 
 You: What are his skills?
 ```
@@ -961,7 +961,7 @@ compound:
 | Replaying raw turns | Cost |
 | --- | --- |
 | Unbounded growth | Needs an eviction policy, and every eviction rule silently discards something a later question might need |
-| Carries citation markers | `[2]` means `01-vision.md` in turn one and `Resume.pdf` in turn three. Request-scoped labels leaking into a cross-turn artifact is precisely the failure `CitedSource`'s materialized mapping exists to prevent (PR-11, DD #9) |
+| Carries citation markers | `[2]` means `chunking-notes.md` in turn one and `retrieval-design.pdf` in turn three. Request-scoped labels leaking into a cross-turn artifact is precisely the failure `CitedSource`'s materialized mapping exists to prevent (PR-11, DD #9) |
 | Carries retrieved context | Old `<context>` blocks would dominate the window and confuse attribution |
 
 A rolling summary makes all three go away **by construction** rather than by rule: three
@@ -1296,13 +1296,13 @@ query the summary dominates both the embedding and the BM25 term counts. That is
 follow-up needs — and exactly wrong when the user changes subject:
 
 ```
-turns 1–3   Ayanabha's resume
+turns 1–3   chunking strategy and overlap
 turn 4      "what is reciprocal rank fusion?"
 
-retrieval query = [3 sentences about a front-end developer] + "what is reciprocal rank fusion?"
+retrieval query = [3 sentences about chunk sizes and splitters] + "what is reciprocal rank fusion?"
 ```
 
-Resume chunks come back for a question about RRF. Clearing the conversation resets it, but
+Chunking passages come back for a question about RRF. Clearing the conversation resets it, but
 requiring the user to know that is not a fix.
 
 **Why it was not solved here.** The fix is cheap — embed the question, cosine-compare it against
@@ -1506,3 +1506,375 @@ only claim that survives being questioned anyway.
 **Next:** PR-14a — Configuration. `TOP_K = 3` is a module constant, model names are hardcoded,
 and `FLUSH_FLOOR`, `MARKER_MAX`, and now the summary's sentence cap have joined them. Every one
 of those is a value someone may need to change without a redeploy.
+
+---
+---
+
+> **PR-14a shipped** — eleven settings moved into `data/src/config.py`, environment variables
+> with defaults, failing loudly at import on bad input. The two decisions worth remembering are
+> the ones where I refused: `MARKER_MAX` is **derived** from `TOP_K` rather than configured
+> (letting someone set `TOP_K=12` with `MARKER_MAX=3` would silently truncate every two-digit
+> citation), and the summary's sentence cap stayed in the prompt because it is a digit inside
+> English prose. *If a value can be computed from another value, it is not configuration.*
+
+---
+---
+
+## PR-14b Discussion — Observability
+
+### Problem Statement
+
+*"The answers got worse."*
+
+That sentence is unanswerable today, and every plausible cause has a different fix. Retrieval
+could have returned bad chunks. The summary could have dragged the query off-topic. The model
+could have ignored Rule 6 and answered from memory. The question could just have been harder.
+There is nothing to look at that distinguishes them.
+
+"Add logging" is a chore, not a PR. What makes this one specific is that **the blind spots were
+already written down** — across PR-10 to PR-13, every time something was deferred or accepted
+as a limitation:
+
+| Blind spot | Recorded in | What it looks like today |
+| --- | --- | --- |
+| Prompt silently drops `{context}` | PR-10 failure modes | Fluent answers built on nothing. No exception. |
+| Model answers from `<history>` | PR-13, Rule 6 | An answer with **no citation markers** |
+| Topic change drags retrieval | PR-13 known limitation | Wrong chunks, plausible answer |
+| No relevance floor on `TOP_K` | observed live | An irrelevant chunk in every result set |
+| An invented citation is stripped | PR-11c | **Nothing at all** |
+| A summary is rejected | PR-13 | Memory silently stops advancing |
+
+The last two are the ones that reframed the PR. PR-11c built a sanitizer that repairs invented
+citation markers, and PR-13 built a validator that rejects poisoned summaries. Both work. Both
+then **throw away the fact that they fired.**
+
+> **Every sanitizer is a quality sensor nobody is reading.**
+> The system quietly repairs itself while the signal about *why it needed repairing* is
+> discarded.
+
+So this PR is not "instrument the application." It is "read the sensors already installed."
+
+---
+
+### Design Decision #30 — The Unit That Decided Is the Unit That Reports
+
+The choice was between each function logging its own events, and the orchestrator logging the
+flow it can see.
+
+`rag.py` cannot know that `strip_unverified_citations` removed a marker labelled `[4]`. Only
+that function knows. Routing the fact upward so the orchestrator can log it would mean the
+orchestrator has to understand what every guardrail checks — inverting a dependency this
+project has kept pointing the right way since PR-10.
+
+That is **Information Expert**: the responsibility goes where the knowledge already is.
+
+**The objection worth pre-empting**, because an interviewer will raise it: *"PR-10 said guardrails
+are testable with a plain assert and zero framework imports. Now every one of them imports a
+logging framework."*
+
+It does not hold, and knowing why matters more than the conclusion. `logging` is stdlib, inert
+by default, and **does not own control flow**. A function that logs is still a pure function you
+can `assert` on; nothing about its contract changed. LCEL Runnables were a different case
+because they would own *when and how the function executes*.
+
+> **Engineering Principle**
+> A dependency that **observes** is not the same as a dependency that **controls**.
+
+The line that does matter: use `logging.getLogger(__name__)` directly, never a `LoggingService`
+injected into each component. The second one is real coupling — every service gains a dependency
+to wire and a mock to write, for a concern none of them care about.
+
+---
+
+### Design Decision #31 — Log Decisions, Not Inputs and Outputs
+
+My first instinct was that each method should log what came in and what went out. It is the
+obvious reading of "log at the unit level", and it is wrong here for a reason specific to this
+application.
+
+Trace what it actually writes to disk:
+
+- `strip_unverified_citations` — its input is **the whole answer**
+- `_render_sources` — its input is **every retrieved chunk's full text**
+- `validate_input` — its input is **whatever the user typed**
+
+That is the entire prompt and the entire answer, for every question, in a durable file. This app
+runs over documents somebody uploaded — the corpus in `storage/` right now is a personal résumé.
+
+```
+✗  stripped citations: input="Reciprocal Rank Fusion scores each document by [2][3]…"
+✓  citations.stripped  removed=1  invented=['4']  issued=['1','2','3']
+```
+
+The second line carries the same diagnostic fact, contains no user content, and — unlike the
+first — is **countable**. "How often does the model invent a citation" is a question about a
+hundred requests, and prose cannot answer it.
+
+> **Engineering Principle**
+> Log **shapes, counts, verdicts, and identifiers.** Content only behind a level nobody enables
+> by accident.
+
+A second filter came out of the same discussion. "Each unit logs" needs a threshold, because
+`_safe_flush_point` runs dozens of times per answer and would drown everything. The criterion is
+not *"is this a unit"* — it is *"did something happen a human would want to know about."*
+Boundaries crossed and decisions made get logged; mechanisms do not.
+
+All six blind spots turned out to be boundaries or decisions. None were mechanisms. That is a
+good sign the list was the right list.
+
+---
+
+### Design Decision #32 — The Ambient Thing Is the Collector, Not an ID
+
+One question spans retrieval, generation, guardrails, and a summarization call that runs *after*
+the stream has finished. Reading a flow by adjacency works right up until it doesn't — the
+deferred summary's events can interleave with the next question's.
+
+The conventional fix is a request ID stamped on every line. My first proposal was
+`threading.get_ident()` stored in `threading.local()`, and the storage half of that instinct was
+right: ambient state reachable at any call depth, without every service signature growing an
+argument for a concern none of them have.
+
+Two things were wrong, and the second is more interesting than the first.
+
+**`threading.local()` is the 1997 version of the idea.** `contextvars.ContextVar` replaced it
+because threads are *reused* — Streamlit runs every question in a session on the same
+ScriptRunner thread, so thread-local state leaks into the next turn unless you remember to clear
+it, and forgetting is silent. You get the *previous* question's context, which looks correct.
+`ContextVar` hands back a token on `set()` and restores the previous value on `reset()`, so
+scoping nests and cannot leak. It is also correct under async, where many coroutines share one
+thread and would all trample a single thread-local.
+
+**But the deeper correction came from choosing the destination first.** Once the events were
+going to an in-app panel rather than to stdout, the ambient thing stopped being an ID:
+
+```
+stdout logs   →  stamp an ID on every line, re-correlate later by grepping
+in-app trace  →  collect events into the current turn's list
+```
+
+The second **never has a correlation problem to solve**, because events were never mixed. Each
+unit appends to whatever collector it can reach, and the collector it can reach *is* the request.
+An ID is only necessary when everything lands in one stream and has to be sorted out afterwards.
+
+> **Engineering Principle**
+> Before solving a problem, check whether a different framing prevents it. Correlation IDs exist
+> to undo mixing. Not mixing is cheaper than un-mixing.
+
+---
+
+### Design Decision #33 — The Observer, a Third Contract
+
+PR-11c split the output guardrails by contract: **validators** reject, **sanitizers** repair.
+Instrumenting Rule 6 needed something that is neither.
+
+The visible symptom of the model ignoring Rule 6 — answering from `<history>` instead of
+`<context>` — is an answer carrying **no citation markers at all**. Fluent, confident,
+unattributable, and completely fine-looking on screen.
+
+It cannot be a validator. PR-11's failure modes already recorded that enforcing citation
+*presence* would mean rejecting valid answers: an uncited answer may still be correct. It cannot
+be a sanitizer either, because there is nothing to repair.
+
+|  | Contract | Changes the answer? | Can reject? |
+| --- | --- | --- | --- |
+| **Validator** | judges | no | yes |
+| **Sanitizer** | repairs | yes | no |
+| **Observer** | reports | no | no |
+
+So the only honest response to a limit you have decided not to enforce is to **make it
+countable**. If it fires on most turns, Rule 6 is not working and the fix is the prompt, not the
+code — and you now have the evidence to say which.
+
+> **Engineering Principle**
+> When you accept a limitation, instrument it. An accepted limitation with no measurement is
+> indistinguishable from an unnoticed bug.
+
+---
+
+### Design Decision #34 — Retention Is Rotation, Not Deletion
+
+The policy I wanted was "keep a week." The implementation I first described was to scan the file
+daily and erase lines older than seven days.
+
+That means **rewriting the entire file** every day: read it all, filter, write it back. `O(file
+size)`, and not atomic — a crash partway through loses the log you were trying to preserve.
+
+Rotation does the same job in `O(1)` by changing the *unit* of retention:
+
+```
+day 0   app.log
+day 1   app.log  app.log.2026-08-07            ← rename is atomic
+day 8   app.log  … 7 kept …                    ← the oldest FILE is deleted whole
+```
+
+You never delete *from* a file. You delete whole files.
+
+> **Engineering Principle**
+> Deleting the front of a sequential file is expensive; deleting a whole file is free. So make
+> the unit of retention a file.
+
+That is the same reasoning behind Kafka expiring whole segments instead of compacting records
+out of them, and behind `logrotate` existing at all.
+
+Two consequences worth stating rather than discovering later. The rollover check runs **on
+write**, not on a timer — nothing is scheduled and nothing runs while the app is idle. Which
+means retention is really "seven rotations", i.e. roughly seven *days of use*, not seven calendar
+days. Fine here; not a guarantee.
+
+---
+
+### The Streamlit Trap
+
+Streamlit re-executes the whole script on every interaction. Handler setup that runs per-rerun
+attaches a **second** file handler, then a third — duplicated lines and leaked file descriptors,
+growing for the life of the session.
+
+The guard that prevents it is one `if`, and it is load-bearing rather than defensive habit:
+
+```python
+if logger.handlers:
+    return
+```
+
+> Configuration in a framework that re-runs your entire program must be idempotent. "It only
+> needs to happen once" is a statement about intent, not about how often the code executes.
+
+---
+
+### Mistakes I Made
+
+#### Mistake 17 — A thread id is not a request id
+
+`threading.get_ident()` returns a unique integer *per thread*. Streamlit runs every question in a
+session on the same ScriptRunner thread, so every request would have received the identical
+"unique" id — the exact opposite of the purpose.
+
+> **Lesson:** an identifier must be unique over **the thing it identifies**. A thread id is
+> unique over threads. The thread was the right *scope* to store something in; it was never the
+> value.
+
+#### Mistake 18 — "Log the input and the output"
+
+It sounds rigorous and it is how the whole prompt and every answer end up in a durable file.
+
+> **Lesson:** in an application over user data, the useful-for-debugging thing and the
+> must-not-store thing are frequently the same bytes. The escape is not logging less — it is
+> logging *about* the data instead of the data: counts, labels, verdicts, lengths.
+
+#### Mistake 19 — Retention by scanning and erasing
+
+Described as a daily pass over the file removing old lines. Correct policy, wrong mechanism.
+
+> **Lesson:** when an operation feels expensive, check whether a different unit of work makes it
+> cheap. Per-line deletion is `O(n)` and fiddly; per-file deletion is free. The policy did not
+> change — the granularity did.
+
+---
+
+### Engineering Lessons
+
+1. **Instrument the blind spots you already documented.** A list written while deferring things
+   is a better instrumentation plan than a fresh survey.
+2. **Every sanitizer is a quality sensor.** If it repairs without reporting, you are losing the
+   signal that told you the model is misbehaving.
+3. **A dependency that observes is not one that controls.** `logging` does not break framework
+   independence; a `LoggingService` injected everywhere would.
+4. **Log about the data, not the data.** Counts, verdicts, identifiers, shapes.
+5. **The unit of logging is a decision, not a function.** Mechanisms called dozens of times per
+   request are noise.
+6. **Check whether a different framing prevents the problem** before solving it. Not mixing
+   beats un-mixing.
+7. **An identifier must be unique over the thing it identifies.**
+8. **When you accept a limitation, instrument it** — otherwise it is indistinguishable from a bug
+   nobody noticed.
+9. **Make the unit of retention a file**, not a line.
+10. **Configuration must be idempotent** in any framework that re-runs your program.
+11. **Observability is what makes graceful degradation honest.** A degradation nobody can see is
+    just a quality regression.
+
+---
+
+### Interview Takeaways
+
+**Logging, metrics, and tracing — what does each answer?**
+
+> Logs answer "what happened in this one request", metrics answer "what is happening across many",
+> and traces answer "how did one request flow through the components, and where did the time go".
+> For a single-process app I got most of the value from structured logs with per-turn collection —
+> full distributed tracing would have been machinery without a distributed system underneath it.
+
+**What do you log in an LLM application, and what must you never log?**
+
+> The tension is that the most useful thing to log — the full prompt and the answer — is exactly
+> what you must not store, because it is the user's documents. So I log *about* the data rather
+> than the data: how many chunks came back and their IDs, how many citation markers were invented
+> and which labels, why a guardrail rejected, the length of the query rather than the query.
+> Everything countable, nothing quotable.
+
+**How would you detect a silent quality regression?**
+
+> By instrumenting the checks that already repair things quietly. My sanitizer strips citation
+> markers the model invented, and before this it did that invisibly — so I had no idea whether it
+> fired once a week or on every answer. Same for a rule I decided not to enforce: I can't reject
+> an answer for having no citations, because it might still be correct, but I can count how often
+> it happens, and if that number climbs the fix is the prompt.
+
+**Why a ContextVar rather than passing a request id through?**
+
+> Threading an ID through every service signature makes every component carry an argument for a
+> concern none of them have. But the more interesting answer is that once I decided the events
+> were collected per turn rather than emitted into one stream, I didn't need an ID at all — the
+> ContextVar holds the collector itself, so events are never mixed and there is nothing to
+> correlate. Correlation IDs exist to undo mixing.
+
+**Why not `threading.local()`?**
+
+> Threads get reused, so state leaks into the next request unless you clear it, and forgetting is
+> silent — you'd get the previous request's context, which looks correct. ContextVar's set/reset
+> token pair makes that impossible. It's also the one that survives going async, where many
+> coroutines share a thread and would all overwrite a single thread-local.
+
+**How do you stop a log file filling the disk?**
+
+> Rotation, not truncation. Deleting old lines from a file means rewriting the whole file, which
+> is O(size) and not atomic. Rotating makes the unit of retention a file, so renaming is atomic
+> and dropping the oldest is free regardless of how big it got — the same reason Kafka expires
+> whole segments rather than compacting records out of them.
+
+---
+
+### Self-Check
+
+1. Why is "add logging" not a sufficient description of this PR?
+2. What is an Information Expert argument for unit-level logging?
+3. Why does importing `logging` into a guardrail not violate the PR-10 boundary — and what would?
+4. What is wrong with logging a function's inputs and outputs *in this application specifically*?
+5. Which functions should not be logged at all, and what is the criterion?
+6. Why is a thread id unusable as a request id here?
+7. What does the ContextVar hold, and why does that remove the need for a request id entirely?
+8. Name the three contracts in the output guardrails module and what each may do.
+9. Why can "the answer has no citations" not be a validator?
+10. Why is deleting old lines from a log file the wrong mechanism for a retention policy?
+11. What breaks if `configure_logging()` is not idempotent?
+
+---
+
+### Biggest Takeaway
+
+> **The instrumentation was already decided. I just hadn't read it.**
+
+Every event this PR emits corresponds to something an earlier PR had already identified and then
+deliberately let go — a limitation accepted, a check that repairs silently, a rule enforced only
+by prompt compliance. The work was not deciding *what* to watch. It was noticing that a system
+which quietly fixes itself is a system that is quietly telling you something, and nobody was
+listening.
+
+The second lesson is about honesty. PR-15 leans on this directly: graceful degradation is only
+defensible if the degradation is observable. Falling back to dense-only retrieval without a signal
+is not resilience — it is a quality regression you chose.
+
+---
+
+**Next:** PR-15 — Reliability Engineering. Ollama going down is still a traceback rendered
+underneath the user's own question.

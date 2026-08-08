@@ -27,7 +27,7 @@ input to _render_sources means logging every retrieved chunk. This app runs over
 somebody uploaded, and the file sink is DURABLE - it outlives the session and can be copied
 somewhere the reader never saw those documents.
 
-    BAD   stripped citations: input="Ayanabha Misra is a Front-end Developer [2][3]…"
+    BAD   stripped citations: input="Reciprocal Rank Fusion scores each document by [2][3]…"
     GOOD  citations.stripped  removed=1  invalid=['4']  issued=['1','2','3']
 
 Same diagnostic fact, no user content, and the second one is countable.
