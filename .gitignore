@@ -65,6 +65,14 @@ cover/
 
 # Django stuff:
 *.log
+
+# Runtime state, never source: FAISS index, BM25 index, metadata catalog, app.log, and
+# documents.pkl - which holds the full text of every indexed chunk.
+#
+# Tracked until PR-16, which is why the repo carried indexed document contents. Runtime
+# artifacts belong on the machine that produced them, and every path here derives from
+# STORAGE_DIR in data/src/config.py.
+storage/
 local_settings.py
 db.sqlite3
 db.sqlite3-journal
