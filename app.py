@@ -1,9 +1,30 @@
 import time
+from dataclasses import dataclass
 
 import streamlit as st
 from data.src.ingestion import ingest_documents
 from data.src.metadata.metadata_catalog import MetadataCatalog
+from data.src.models.GenerationResponse import GenerationResponse
 from data.src.rag import ask_stream
+
+
+# --------------------------------------------------
+# Conversation record
+# --------------------------------------------------
+# One exchange: what was asked, and everything the pipeline produced in reply.
+#
+# This lives in app.py, not in data/src/, on purpose. A conversation is SESSION state -
+# it belongs to one browser tab and dies with it. Nothing in the domain layer knows or
+# needs to know that a previous question was ever asked; rag.py still answers each
+# question in complete isolation.
+#
+# Teaching the RETRIEVER about previous turns is a different problem with a different
+# owner - that is PR-13, Memory Architecture. Keeping the record here is what keeps the
+# two PRs from bleeding into each other.
+@dataclass
+class ChatTurn:
+    question: str
+    response: GenerationResponse
 
 # --------------------------------------------------
 # Typewriter rendering
@@ -77,6 +98,127 @@ if "knowledge_base" not in st.session_state:
 if "last_upload_signature" not in st.session_state:
     st.session_state.last_upload_signature = None
 
+# The conversation. Session state only - deliberately NOT persisted to disk.
+#
+# The band each value belongs to is the whole point of this PR:
+#   persistent (disk)  storage/*.index, metadata_catalog.json  -> survives restart,
+#                      shared by every session; that is why documents need uploading once
+#   session (RAM)      this list                               -> dies with the tab
+#   transient (a run)  the streamed text, filters              -> dies at end of script
+#
+# Documents are expensive to rebuild, so they live on disk. A conversation is cheap,
+# private to one person, and stale the moment they leave - so it does not.
+if "conversation" not in st.session_state:
+    st.session_state.conversation = []
+
+
+def conversation_totals(turns: list[ChatTurn]) -> dict:
+    """Accumulated cost across the whole conversation.
+
+    DERIVED, not stored. A running total kept in session state would be a second copy
+    of a fact the turn list already holds - and the two would drift the first time a
+    turn is removed or the history is cleared. Recomputing over a handful of turns is
+    free; keeping two sources of truth in sync never is.
+    """
+    totals = {"input_tokens": 0, "output_tokens": 0, "latency": 0, "answered": 0}
+
+    for turn in turns:
+        # Rejected turns never reached the model, so they contribute nothing but are
+        # still counted as part of the conversation.
+        if not turn.response.success:
+            continue
+
+        usage = turn.response.token_usage or {}
+        totals["input_tokens"] += usage.get("input_tokens") or 0
+        totals["output_tokens"] += usage.get("output_tokens") or 0
+        totals["latency"] += turn.response.latency or 0
+        totals["answered"] += 1
+
+    return totals
+
+
+def render_reply_details(response: GenerationResponse) -> None:
+    """Everything under an assistant reply: sources, per-turn cost, chunks, metadata.
+
+    Shared by both render paths - a turn replayed from history and a turn that has just
+    finished streaming render identically below the answer text. Only the answer itself
+    is animated, and only once.
+    """
+    if not response.success:
+        return
+
+    # Sources stay visible - they are part of the answer's credibility, not diagnostics -
+    # but on ONE line instead of one line per source.
+    if response.sources:
+        st.caption(
+            "Sources: "
+            + "  ·  ".join(
+                f"`[{source.label}]` {source.display_name}"
+                for source in response.sources
+            )
+        )
+
+    # Everything below is diagnostics. Collapsed by default: at three-plus turns the page
+    # was mostly instrumentation, and the answers - the actual product - were the smallest
+    # thing on screen.
+    #
+    # Tabs rather than more expanders because Streamlit does not allow an expander inside
+    # an expander.
+    with st.expander("ℹ️ Details"):
+
+        cost_tab, chunks_tab, metadata_tab = st.tabs(
+            ["Cost", "Retrieved Chunks", "Raw Metadata"]
+        )
+
+        with cost_tab:
+            # What THIS question cost. The running conversation total is in the sidebar.
+            token_usage = response.token_usage or {}
+            cost_column_1, cost_column_2, cost_column_3 = st.columns(3)
+
+            with cost_column_1:
+                st.metric("Prompt Tokens", token_usage.get("input_tokens", "-"))
+
+            with cost_column_2:
+                st.metric("Completion Tokens", token_usage.get("output_tokens", "-"))
+
+            with cost_column_3:
+                st.metric(
+                    "Latency",
+                    f"{response.latency / 1_000_000:.0f} ms" if response.latency else "-",
+                )
+
+            st.caption(f"Finish reason: `{response.finish_reason}`")
+            st.caption(
+                "Answered using Hybrid Retrieval (Dense + BM25 + RRF) with verified citations."
+            )
+
+        with chunks_tab:
+            st.caption(
+                f"{len(response.sources or [])} fused chunks "
+                "(Reciprocal Rank Fusion)."
+            )
+
+            for rank, source in enumerate(response.sources or [], start=1):
+                document = source.document
+
+                st.markdown(f"**`[{source.label}]` {source.display_name}** — fusion rank #{rank}")
+                st.write(document.page_content)
+
+                chunk_column_1, chunk_column_2 = st.columns(2)
+
+                with chunk_column_1:
+                    st.caption("**Document ID**")
+                    st.code(document.metadata.get("document_id", "-"))
+
+                with chunk_column_2:
+                    st.caption("**Chunk ID**")
+                    st.code(source.chunk_id or "-")
+
+                st.divider()
+
+        with metadata_tab:
+            st.json(response.metadata)
+
 
 # --------------------------------------------------
 # Sidebar
@@ -85,16 +227,49 @@ with st.sidebar:
     st.header("🗺️ Project Roadmap")
 
     st.success("✅ Week 1 — Core RAG (PR-1 → PR-6)")
-
     st.success("✅ Week 2 — Deepen RAG (PR-7 → PR-9)")
-    st.success("✅ Week 3 — LCEL (PR-10 → PR-11)")
+    st.success("✅ Week 3 — LCEL & Citations (PR-10 → PR-11a)")
 
-    st.info("🔜 Week 4 — Production Readiness")
+    st.info("🚧 Week 4 — Production Readiness (PR-12a → PR-12)")
 
     st.divider()
 
-    st.subheader("Week 3 Progress")
-    st.progress(100)
+    # --------------------------------------------------
+    # Conversation cost
+    # --------------------------------------------------
+    # Accumulated across every answered turn in this session. Recomputed each run from
+    # the turn list rather than incremented, so it can never disagree with the history
+    # actually on screen.
+    st.subheader("💬 Conversation")
+
+    totals = conversation_totals(st.session_state.conversation)
+
+    st.metric("Turns", len(st.session_state.conversation))
+
+    sidebar_column_1, sidebar_column_2 = st.columns(2)
+
+    with sidebar_column_1:
+        st.metric("Prompt Tokens", totals["input_tokens"])
+
+    with sidebar_column_2:
+        st.metric("Completion Tokens", totals["output_tokens"])
+
+    st.metric(
+        "Total Tokens",
+        totals["input_tokens"] + totals["output_tokens"],
+    )
+
+    st.caption(
+        f"Cumulative generation time: {totals['latency'] / 1_000_000_000:.1f}s "
+        f"across {totals['answered']} answered turn(s)."
+    )
+
+    # Wiping is a single assignment because the turn list is the ONLY place conversation
+    # state lives. Had the totals been stored separately, this button would have needed
+    # to remember to reset them too - and one day it would have forgotten.
+    if st.button("🗑️ Clear Conversation", use_container_width=True):
+        st.session_state.conversation = []
+        st.rerun()
 # --------------------------------------------------
 # Main Page
 # --------------------------------------------------
@@ -107,6 +282,41 @@ st.divider()
 # Upload Section
 # --------------------------------------------------
 st.subheader("📚 Build Knowledge Base")
+
+# --------------------------------------------------
+# What is already indexed  (corpus scope, read from disk)
+# --------------------------------------------------
+# Read ONCE per run and reused by the retrieval filters further down, so the two panels
+# can never disagree about what exists.
+#
+# This block is deliberately OUTSIDE the `if st.session_state.knowledge_base:` branch
+# below. That branch is an upload RECEIPT - "this upload produced N chunks in X seconds"
+# - and a receipt correctly disappears when you leave. But two facts were trapped inside
+# it that are not about the upload at all: what documents exist, and how large the corpus
+# is. Those belong to the index on disk, which outlives every session.
+#
+# The symptom was a returning user opening the app, seeing an empty uploader, and having
+# no idea their knowledge base was already built - while the chat below answered
+# questions from it perfectly.
+#
+#   facts about an UPLOAD EVENT  -> session state, shown as a receipt
+#   facts about the CORPUS       -> disk, shown on every run
+indexed_documents = MetadataCatalog.list_documents()
+
+if indexed_documents:
+    with st.expander(
+        f"🗂️ Knowledge base contains **{len(indexed_documents)} document(s)**",
+        expanded=False,
+    ):
+        for indexed_document in indexed_documents:
+            st.markdown(f"- {indexed_document['display_name']}")
+
+        st.caption(
+            "Indexed on disk (FAISS + BM25). These persist across restarts — "
+            "re-uploading is only needed for new documents."
+        )
+else:
+    st.caption("No documents indexed yet. Upload one or more files to get started.")
 
 files = st.file_uploader(
     "Upload PDF or Markdown documents",
@@ -129,7 +339,6 @@ if st.button("Build Knowledge Base"):
 
         (
             chunks,
-            embeddings,
             dimension,
             elapsed,
             knowledge_base_size,
@@ -138,7 +347,6 @@ if st.button("Build Knowledge Base"):
 
         st.session_state.knowledge_base = {
             "chunks": chunks,
-            "embeddings": embeddings,
             "dimension": dimension,
             "elapsed": elapsed,
             "knowledge_base_size": knowledge_base_size,
@@ -152,7 +360,6 @@ if st.session_state.knowledge_base:
     kb = st.session_state.knowledge_base
 
     chunks = kb["chunks"]
-    embeddings = kb["embeddings"]
     dimension = kb["dimension"]
     elapsed = kb["elapsed"]
     knowledge_base_size = kb["knowledge_base_size"]
@@ -241,12 +448,13 @@ st.divider()
 # --------------------------------------------------
 st.subheader("🔍 Retrieval Filters")
 
-available_documents = MetadataCatalog.list_documents()
-
+# Reuses the list read at the top of the page rather than reading the catalog a second
+# time - one read per run, so the upload panel and the filter list are guaranteed to be
+# describing the same corpus.
 selected_documents = st.multiselect(
     "Limit retrieval to specific documents",
-    options=available_documents,
-    default=available_documents,
+    options=indexed_documents,
+    default=indexed_documents,
     format_func=lambda document: document["display_name"],
 )
 
@@ -257,131 +465,112 @@ filters = {
     ]
 }
 
-# --------------------------------------------------
-# Question Answering Section
-# --------------------------------------------------
-st.subheader("💬 Ask Questions")
-
-question = st.text_input(
-    "Ask something about your uploaded documents"
-)
-
-if st.button("Ask", type="primary"):
-
-    # Returns immediately with a handle. No model call has happened yet - generation
-    # starts when st.write_stream below begins pulling from handle.tokens.
-    stream = ask_stream(question, filters)
-
-    st.markdown("#### 💡 Answer")
-
-    # write_stream renders whatever the generator yields and blocks until it is
-    # exhausted. typewriter() sits between the two purely to smooth the cadence - it
-    # changes nothing about the text, the order, or the sanitizing already applied.
-    # The answer is no longer inside an expander: collapsing a region that is actively
-    # being written to defeats the point of streaming.
-    st.write_stream(typewriter(stream.tokens))
-
-    # Only readable AFTER the stream is consumed - that is when _stream_tokens
-    # assembles it. If a guardrail rejected before generation, the loop above
-    # rendered nothing and this was already populated.
-    response = stream.response
-
-    # Note the ordering consequence of streaming: an output validator can only reject
-    # here, once the text is already on screen. The error appears BELOW an answer the
-    # user has read. That is the honest cost of streaming, not a bug to paper over.
-    if not response.success:
-        st.error(response.message)
-        st.stop()
-
-    st.success("✅ Answer Generated using Hybrid Retrieval (Dense + BM25 + RRF) with Verified Citations")
-
-    # Rendered after the stream because [n] can only be resolved to a filename once
-    # the full set of markers is known.
-    if response.sources:
-        st.caption("**Sources**")
-        for source in response.sources:
-            st.caption(f"`[{source.label}]` {source.display_name}")
-
-    token_col1, token_col2 = st.columns(2)
-
-    with token_col1:
-        st.metric(
-            "Prompt Tokens",
-            response.token_usage.get("input_tokens", "-")
-        )
-
-    with token_col2:
-        st.metric(
-            "Completion Tokens",
-            response.token_usage.get("output_tokens", "-")
-        )
-
-    with st.expander("⚡ Generation Details"):
-
-        st.write("**Finish Reason**")
-        st.code(response.finish_reason)
-
-        st.write("**Latency**")
-        st.code(f"{response.latency / 1_000_000:.2f} ms")
-
-    with st.expander("📚 Retrieved Chunks"):
-
-        st.info(f"Retrieved **{len(response.sources)}** fused chunks using Reciprocal Rank Fusion (RRF).")
-
-        for rank, source in enumerate(response.sources, start=1):
-
-            document = source.document
-
-            st.markdown(f"### `[{source.label}]` — {source.display_name}")
-            st.caption(f"Fusion Rank #{rank}")
-
-            st.write(document.page_content)
-
-            metadata_col1, metadata_col2 = st.columns(2)
-
-            with metadata_col1:
-                st.write("**Document ID**")
-                st.code(document.metadata.get("document_id", "-"))
-
-                st.write("**Chunk Index**")
-                st.code(document.metadata.get("chunk_index", "-"))
-
-            with metadata_col2:
-                st.write("**Chunk ID**")
-                st.code(source.chunk_id or "-")
-
-    with st.expander("🧠 Response Metadata"):
-        st.json(response.metadata)
-
 st.divider()
+
 # --------------------------------------------------
-# Current Milestone
+# Conversation
 # --------------------------------------------------
-st.subheader("📈 Current Milestone")
+st.subheader("💬 Conversation")
 
-st.write("**Week 3 • LCEL Refactor — Complete**")
+if not st.session_state.conversation:
+    st.caption("Ask a question below to start the conversation.")
 
-st.success(
-    """
-    ✅ LCEL Composition (RunnableParallel | Prompt | LLM)
+# ---- REPLAY -----------------------------------------------------------------------
+# Every past turn, re-rendered from session state on EVERY run.
+#
+# This loop is what fixes the defect this PR exists for. Previously the answer was a
+# local variable inside `if st.button(...)`, so any widget interaction - changing the
+# document filter, moving the chunk preview - reran the script, found the button False,
+# and the answer vanished. Rendering from state instead of from a local means the screen
+# is a function of what is remembered, not of what just happened.
+#
+# Rendered with st.markdown, NOT the typewriter: replaying the animation on every rerun
+# would look broken and cost seconds. Only the newest reply is ever animated, and only
+# once - the transition from "being generated" to "history" is exactly the transition
+# from transient state to session state.
+for past_turn in st.session_state.conversation:
 
-    ✅ System / Human Prompt Separation
+    with st.chat_message("user"):
+        st.markdown(past_turn.question)
 
-    ✅ Framework-Independent Business Layer
+    with st.chat_message("assistant"):
+        if past_turn.response.success:
+            st.markdown(past_turn.response.answer)
+        else:
+            # Rejections are shown, not hidden. A guardrail refusal is a real thing that
+            # happened in this conversation, and silently dropping it would make the
+            # history a misleading account of the session.
+            st.error(past_turn.response.message)
 
-    ✅ Labelled Source Context
+        render_reply_details(past_turn.response)
 
-    ✅ Inline Citations
+# ---- NEW TURN ---------------------------------------------------------------------
+# chat_input returns the submitted text only on the run where it was submitted, and
+# clears itself afterwards - so this block runs once per question, never on a replay.
+question = st.chat_input("Ask something about your uploaded documents")
 
-    ✅ Deterministic Citation Verification
+if question:
 
-    🚀 Next Milestone: Week 4 — Production Readiness
-    """
-)
+    with st.chat_message("user"):
+        st.markdown(question)
+
+    with st.chat_message("assistant"):
+
+        # Returns immediately. No model call has happened yet - generation starts when
+        # write_stream begins pulling from the token iterator.
+        stream = ask_stream(question, filters)
+
+        # A pre-generation rejection (empty question, prompt injection, no context) has
+        # already populated `response` and will yield no tokens. Checking here keeps an
+        # empty stream from rendering an empty bubble.
+        if stream.response is None:
+            # The ONLY animated render in the whole page. typewriter() smooths the
+            # cadence of the backend's buffered flushes; it changes nothing about the
+            # text, the order, or the sanitizing already applied.
+            st.write_stream(typewriter(stream.tokens))
+
+        # Readable only now - _stream_tokens assembles it after the final flush.
+        response = stream.response
+
+        # The ordering consequence of streaming: an output validator can only reject
+        # once the text is already on screen, so the error appears BELOW an answer the
+        # user has read. Documented in week-4-AI-Assistant.md as the honest cost of
+        # streaming rather than something to paper over.
+        if not response.success:
+            st.error(response.message)
+
+        render_reply_details(response)
+
+    # PROMOTION: transient -> session. Appending AFTER rendering is what prevents a
+    # double render - the replay loop above already ran this pass with the old history.
+    st.session_state.conversation.append(
+        ChatTurn(question=question, response=response)
+    )
+
+    # Then immediately re-run, and this is the important part.
+    #
+    # Streamlit executes top to bottom. The sidebar - including the accumulated
+    # conversation cost - rendered near the TOP of this script, BEFORE this turn was
+    # appended. So the totals on screen describe the conversation as it was one question
+    # ago. Nothing recomputes them, because nothing re-executes.
+    #
+    # This is the defining property of the whole PR stated as a rule:
+    #
+    #   THE PAGE IS A FUNCTION OF STATE.
+    #   Anything rendered before the state changed is stale by definition.
+    #
+    # Re-running makes the page a function of the CURRENT state: sidebar totals include
+    # this turn, and the answer just streamed is replayed statically from history like
+    # every other turn. It also clears the dimmed leftovers Streamlit shows while a long
+    # blocking render is in progress.
+    #
+    # This costs nothing - no model call. The turn is already in memory; the rerun only
+    # re-renders from it.
+    st.rerun()
 
 st.divider()
 
 # --------------------------------------------------
 # Footer
 # --------------------------------------------------
-st.caption("Built in Public ❤️ | Week 3 | LCEL Refactor & Citations")
+st.caption("Built in Public ❤️ | Week 4 | Streaming & Conversation State")

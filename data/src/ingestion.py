@@ -12,6 +12,6 @@ def ingest_documents(uploaded_files):
     MetadataCatalog.register(documents)
     chunks = chunk_documents(documents)
 
-    embeddings, dimension, elapsed, knowledge_base_size, sparse_stats = IndexerService.index(chunks)
+    dimension, elapsed, knowledge_base_size, sparse_stats = IndexerService.index(chunks)
 
-    return chunks, embeddings, dimension, elapsed, knowledge_base_size, sparse_stats
+    return chunks, dimension, elapsed, knowledge_base_size, sparse_stats
