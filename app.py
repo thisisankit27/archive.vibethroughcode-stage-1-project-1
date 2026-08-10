@@ -331,8 +331,7 @@ with st.sidebar:
     st.success("✅ Week 1 — Core RAG (PR-1 → PR-6)")
     st.success("✅ Week 2 — Deepen RAG (PR-7 → PR-9)")
     st.success("✅ Week 3 — LCEL & Citations (PR-10 → PR-11a)")
-
-    st.info("🚧 Week 4 — Production Readiness (PR-12a → PR-12)")
+    st.success("✅ Week 4 — Production Readiness (PR-12a → PR-16)")
 
     st.divider()
 
