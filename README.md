@@ -5,7 +5,7 @@ A private, local-first RAG application. Upload PDFs or Markdown, ask questions, 
 
 Built from scratch over four weeks, one engineering concept per pull request. Every
 architectural decision, and every alternative rejected along the way, is written down in
-[`docs/engineering-mindset/`](docs/engineering-mindset/).
+[`Project: Knowledge Assistant`](https://archive.vibethroughcode.com/stage-1/project-stage-1/).
 
 ```
 You: How does the fusion step combine the two retrievers?
